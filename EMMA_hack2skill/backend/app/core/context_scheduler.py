@@ -327,7 +327,7 @@ class MutantCodeSelector:
       -0.1 x line_count  Parsimony penalty (favours compact implementations)
     """
 
-    def __init__(self, target_signature: str) -> None:
+    def __init__(self, target_signature: str = "") -> None:
         self.signature: str = target_signature
         self._return_required: bool = self._detect_return_requirement()
 
@@ -374,6 +374,36 @@ class MutantCodeSelector:
         """
         return len(code.splitlines()) * 0.1
 
+    def score(self, code: str, task: str = "") -> float:
+        """
+        Compute the fitness score for a single candidate code string.
+
+        Parameters
+        ----------
+        code : str
+            The candidate implementation string.
+        task : str
+            The task description (unused, for API compatibility).
+
+        Returns
+        -------
+        float
+            Fitness score in range [-100.0, 50.0].
+        """
+        # Gate 1: Syntax check
+        if not self.parse_syntax_check(code):
+            return -100.0
+
+        score = 50.0
+        # Gate 2: Parsimony deduction
+        score -= self.calculate_parsimony(code)
+
+        # Gate 3: Missing return constraint
+        if self._return_required and "return" not in code:
+            score -= 30.0
+
+        return score
+
     # ------------------------------------------------------------------
     # Mutant Evaluation
     # ------------------------------------------------------------------
@@ -406,24 +436,7 @@ class MutantCodeSelector:
         graded: List[Tuple[str, float]] = []
 
         for code in candidate_codes:
-            score: float = 0.0
-
-            # Gate 1: Syntax check
-            if self.parse_syntax_check(code):
-                score += 50.0
-            else:
-                score -= 100.0
-                graded.append((code, score))
-                continue                        # Hard failure — skip remaining gates
-
-            # Gate 2: Parsimony deduction
-            score -= self.calculate_parsimony(code)
-
-            # Gate 3: Missing return constraint
-            if self._return_required and "return" not in code:
-                score -= 30.0
-
-            graded.append((code, score))
+            graded.append((code, self.score(code)))
 
         if not graded:
             raise ValueError(
@@ -433,6 +446,7 @@ class MutantCodeSelector:
 
         graded.sort(key=lambda pair: pair[1], reverse=True)
         return graded[0][0]
+
 
 
 # =============================================================================

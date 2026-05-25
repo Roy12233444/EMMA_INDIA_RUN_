@@ -13,10 +13,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../back
 
 from app.core.context_scheduler import ASTContextRotator, MutantCodeSelector, PageCurveEvaporator
 
-# Safely import orchestrator-v2 despite the dash in filename
-orchestrator_module = importlib.import_module("app.core.orchestrator-v2")
-CausalConvergenceMonitor = orchestrator_module.CausalConvergenceMonitor
-CausalInstabilityException = orchestrator_module.CausalInstabilityException
+# Import from production orchestrator module
+from app.core.orchestrator import CausalConvergenceMonitor, CausalInstabilityException
 
 def print_header(title: str):
     print("\n" + "="*80)
