@@ -251,3 +251,103 @@ async def test_parallel_concurrency(mock_to_thread):
     # Verify that asyncio.to_thread was spawned 3 times
     assert mock_to_thread.call_count == 3
 
+
+# ---------------------------------------------------------------------------
+# Test: CodeCritic
+# ---------------------------------------------------------------------------
+def test_critic_ast_comparison():
+    from app.core.critic import CodeCritic
+    critic = CodeCritic()
+    
+    orig = "def f(x):\n    return x + 1\n\nclass Data:\n    pass\n"
+    # spacing/comment updates should not trigger modification
+    mutant_comments = "def f(x):\n    # spacer\n    return x + 1\n\nclass Data:\n    pass\n"
+    
+    diff = critic.compare_ast(orig, mutant_comments)
+    assert len(diff["added"]) == 0
+    assert len(diff["deleted"]) == 0
+    assert len(diff["modified"]) == 0
+
+    # structural change in function logic
+    mutant_struct = "def f(x):\n    return x + 2\n\nclass Data:\n    pass\n"
+    diff_struct = critic.compare_ast(orig, mutant_struct)
+    assert "def:f" in diff_struct["modified"]
+
+    # added function
+    mutant_added = orig + "\ndef new_func():\n    pass\n"
+    diff_added = critic.compare_ast(orig, mutant_added)
+    assert "def:new_func" in diff_added["added"]
+
+    # deleted class
+    mutant_deleted = "def f(x):\n    return x + 1\n"
+    diff_deleted = critic.compare_ast(orig, mutant_deleted)
+    assert "class:Data" in diff_deleted["deleted"]
+
+
+def test_critic_surgical_splicing():
+    from app.core.critic import CodeCritic
+    critic = CodeCritic()
+    
+    orig = "def one():\n    return 1\n\ndef two():\n    return 2\n\ndef three():\n    return 3\n"
+    mutant = "def one():\n    return 1\n\ndef two():\n    # modified\n    return 22\n\ndef three():\n    return 3\n"
+    
+    # splice target node 'def:two'
+    spliced = critic.splice_node(orig, mutant, "def:two")
+    
+    expected = "def one():\n    return 1\n\ndef two():\n    # modified\n    return 22\n\ndef three():\n    return 3\n"
+    assert spliced.strip() == expected.strip()
+
+
+def test_critic_stai_score():
+    from app.core.critic import CodeCritic
+    critic = CodeCritic()
+    
+    orig = "def one():\n    return 1\n\ndef two():\n    return 2\n\ndef three():\n    return 3\n\ndef four():\n    return 4\n"
+    # modify one out of four -> standard STAI triggers because total_original >= 3
+    mutant = "def one():\n    return 1\n\ndef two():\n    return 22\n\ndef three():\n    return 3\n\ndef four():\n    return 4\n"
+    
+    spliced = critic.splice_node(orig, mutant, "def:two")
+    report = critic.calculate_stai(orig, spliced)
+    
+    assert report["variant"] == "STAI"
+    assert report["total_original_nodes"] == 4
+    assert report["identical_nodes"] == 3
+    assert report["stai"] == 0.75
+    assert report["drift_detected"] is True
+    assert report["verdict"] == "FAIL — structural drift exceeds tolerance"  # 0.75 < 0.85
+
+    # edge case: STAI-DW (Deep-Walk) triggers because total_original < 3
+    orig_small = "def only_one():\n    return 1\n"
+    mutant_small = "def only_one():\n    return 11\n"
+    spliced_small = critic.splice_node(orig_small, mutant_small, "def:only_one")
+    report_small = critic.calculate_stai(orig_small, spliced_small)
+    assert report_small["variant"] == "STAI-DW"
+    assert report_small["stai"] < 1.0
+
+
+def test_critic_error_monitor():
+    from app.core.critic import CodeCritic
+    critic = CodeCritic()
+    
+    # loop detected
+    errors = [
+        "TypeError: unsupported operand type(s)",
+        "TypeError: unsupported operand type(s)",
+        "TypeError: unsupported operand type(s)"
+    ]
+    report = critic.analyze_errors(errors, threshold=3)
+    assert report["looping_detected"] is True
+    assert report["frequent_error"] == "TypeError"
+    assert "[CRITIQUE]" in report["critique"]
+
+    # safe mixed errors (no loop)
+    mixed = [
+        "TypeError: unsupported operand type(s)",
+        "IndexError: list index out of range",
+        "TypeError: unsupported operand type(s)"
+    ]
+    report_mixed = critic.analyze_errors(mixed, threshold=3)
+    assert report_mixed["looping_detected"] is False
+    assert report_mixed["frequent_error"] is None
+
+

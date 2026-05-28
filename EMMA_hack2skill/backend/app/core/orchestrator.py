@@ -16,8 +16,10 @@ import difflib
 import asyncio
 import shlex
 import os
+import json
 from typing import Any, Dict, List, Optional, Tuple
 from app.core.code_generator import CodeGenerator
+from app.utils.token_prune import ContextVectorPruner
 
 
 
@@ -237,6 +239,7 @@ class Orchestrator:
         self.max_turns:      int = max_turns
         self.loop_threshold: int = loop_threshold
         self.test_command:   str = test_command
+        self.pruner: ContextVectorPruner = ContextVectorPruner(max_tokens=8000)
 
     # ------------------------------------------------------------------
     # Subprocess Utilities
@@ -377,6 +380,31 @@ class Orchestrator:
         while loop_turn < self.max_turns:
             loop_turn += 1
             print(f"\n[ORCHESTRATOR] ── Cycle Turn #{loop_turn}/{self.max_turns} ──")
+
+            # ----------------------------------------------------------------
+            # ACTIVE MEMORY MONITORING & CONTEXT COMPACTION
+            # ----------------------------------------------------------------
+            history_str = json.dumps(turn_log, ensure_ascii=False)
+            tier, token_count = self.pruner.evaluate_threshold(history_str)
+            print(f"[ORCHESTRATOR] Active prompt footprint: {token_count} tokens | Tier: {tier}")
+
+            if tier in ("RED", "CRITICAL"):
+                print(f"[ORCHESTRATOR] Utilization >= 70% threshold ({token_count} tokens). Initiating DTE-IS memory compaction...")
+                entropy_map = self.pruner.score_entropy(turn_log)
+                turn_log = self.pruner.compact_history(turn_log, entropy_map=entropy_map)
+                print(f"[ORCHESTRATOR] Context compaction complete. Free memory buffer secured.")
+
+            elif tier == "OVERFLOW":
+                print(f"[CRITICAL ERROR] Context utilization exceeded 95% budget ({token_count}/8000 tokens).")
+                print(f"[ORCHESTRATOR] Executing emergency Git checkout rollback...")
+                rollback_ok, rollback_msg = await self._git_rollback()
+                print(rollback_msg)
+                
+                raise CausalInstabilityException(
+                    f"Cognitive memory overflow detected at turn #{loop_turn} ({token_count} tokens). Safe rollback applied.",
+                    turn=loop_turn,
+                    last_error="Token budget overflow (OVERFLOW tier)"
+                )
 
             # ============================================================
             # Step 1: CODE GENERATION (Evolutionary Mutant Sandboxing)

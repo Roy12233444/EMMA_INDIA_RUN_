@@ -24,7 +24,19 @@ from app.tests.test_advanced_core import (
     test_code_generator_atomic_commit,
     test_xml_extractor,
     test_draft_coordinator_fallback,
-    test_parallel_concurrency
+    test_parallel_concurrency,
+    test_critic_ast_comparison,
+    test_critic_surgical_splicing,
+    test_critic_stai_score,
+    test_critic_error_monitor
+)
+from app.tests.test_token_prune import (
+    test_token_counting_accuracy,
+    test_threshold_evaluation,
+    test_entropy_scoring_dte_is,
+    test_log_compaction_fidelity,
+    test_traceback_regex_edge_cases,
+    test_esv_schema_adaptive_keys
 )
 
 async def run_all_tests():
@@ -41,6 +53,16 @@ async def run_all_tests():
         ("test_xml_extractor", test_xml_extractor),
         ("test_draft_coordinator_fallback", test_draft_coordinator_fallback),
         ("test_parallel_concurrency", test_parallel_concurrency),
+        ("test_critic_ast_comparison", test_critic_ast_comparison),
+        ("test_critic_surgical_splicing", test_critic_surgical_splicing),
+        ("test_critic_stai_score", test_critic_stai_score),
+        ("test_critic_error_monitor", test_critic_error_monitor),
+        ("test_token_counting_accuracy", test_token_counting_accuracy),
+        ("test_threshold_evaluation", test_threshold_evaluation),
+        ("test_entropy_scoring_dte_is", test_entropy_scoring_dte_is),
+        ("test_log_compaction_fidelity", test_log_compaction_fidelity),
+        ("test_traceback_regex_edge_cases", test_traceback_regex_edge_cases),
+        ("test_esv_schema_adaptive_keys", test_esv_schema_adaptive_keys),
     ]
     
     passed = 0
