@@ -36,7 +36,21 @@ from app.tests.test_token_prune import (
     test_entropy_scoring_dte_is,
     test_log_compaction_fidelity,
     test_traceback_regex_edge_cases,
-    test_esv_schema_adaptive_keys
+    test_esv_schema_adaptive_keys,
+    test_prompt_assembly_completeness,
+    test_json_extraction_strategy_1_clean,
+    test_json_extraction_strategy_2_fenced,
+    test_json_extraction_strategy_3_preamble_text,
+    test_json_extraction_strategy_4_trailing_comma,
+    test_json_extraction_strategy_5_truncated,
+    test_json_extraction_all_strategies_fail,
+    test_offline_fallback_triggers_on_urlerror,
+    test_offline_fallback_triggers_on_timeout,
+    test_health_probe_skips_inference_on_failure,
+    test_token_budget_convergence,
+    test_causal_loop_alert_injection,
+    test_task_checklist_parity_enforcement,
+    test_schema_version_tag_always_present
 )
 
 async def run_all_tests():
@@ -63,6 +77,20 @@ async def run_all_tests():
         ("test_log_compaction_fidelity", test_log_compaction_fidelity),
         ("test_traceback_regex_edge_cases", test_traceback_regex_edge_cases),
         ("test_esv_schema_adaptive_keys", test_esv_schema_adaptive_keys),
+        ("test_prompt_assembly_completeness", test_prompt_assembly_completeness),
+        ("test_json_extraction_strategy_1_clean", test_json_extraction_strategy_1_clean),
+        ("test_json_extraction_strategy_2_fenced", test_json_extraction_strategy_2_fenced),
+        ("test_json_extraction_strategy_3_preamble_text", test_json_extraction_strategy_3_preamble_text),
+        ("test_json_extraction_strategy_4_trailing_comma", test_json_extraction_strategy_4_trailing_comma),
+        ("test_json_extraction_strategy_5_truncated", test_json_extraction_strategy_5_truncated),
+        ("test_json_extraction_all_strategies_fail", test_json_extraction_all_strategies_fail),
+        ("test_offline_fallback_triggers_on_urlerror", test_offline_fallback_triggers_on_urlerror),
+        ("test_offline_fallback_triggers_on_timeout", test_offline_fallback_triggers_on_timeout),
+        ("test_health_probe_skips_inference_on_failure", test_health_probe_skips_inference_on_failure),
+        ("test_token_budget_convergence", test_token_budget_convergence),
+        ("test_causal_loop_alert_injection", test_causal_loop_alert_injection),
+        ("test_task_checklist_parity_enforcement", test_task_checklist_parity_enforcement),
+        ("test_schema_version_tag_always_present", test_schema_version_tag_always_present),
     ]
     
     passed = 0

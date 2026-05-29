@@ -16,10 +16,11 @@ import difflib
 import asyncio
 import shlex
 import os
+import re
 import json
 from typing import Any, Dict, List, Optional, Tuple
 from app.core.code_generator import CodeGenerator
-from app.utils.token_prune import ContextVectorPruner
+from app.utils.token_prune import ContextVectorPruner, ContextOverflowError
 
 
 
@@ -319,6 +320,39 @@ class Orchestrator:
         )
         return code == 0 and not stdout.strip()
 
+    def _parse_task_md(self) -> Tuple[List[str], List[str]]:
+        completed = []
+        pending = []
+        # Find task.md relative to workspace or direct absolute path
+        # Try both the workspace root and EMMA_hack2skill folder
+        paths_to_try = [
+            os.path.join(self.workspace_path, "task.md"),
+            os.path.join(self.workspace_path, "EMMA_hack2skill", "task.md"),
+            r"C:\Users\soura\.gemini\antigravity-ide\brain\06ac37f7-d228-4ac9-8501-0a6a9562514d\task.md"
+        ]
+        
+        for p in paths_to_try:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line_str = line.strip()
+                            if not line_str.startswith("-"):
+                                continue
+                            if "[x]" in line_str or "`[x]`" in line_str:
+                                parts = line_str.split("]", 1)
+                                if len(parts) > 1:
+                                    completed.append(parts[1].strip().strip("`"))
+                            elif "[ ]" in line_str or "`[ ]`" in line_str or "[/]" in line_str or "`[/]`" in line_str:
+                                parts = line_str.split("]", 1)
+                                if len(parts) > 1:
+                                    pending.append(parts[1].strip().strip("`"))
+                    if completed or pending:
+                        return completed, pending
+                except Exception:
+                    pass
+        return completed, pending
+
     # ------------------------------------------------------------------
     # Core Solver Loop
     # ------------------------------------------------------------------
@@ -388,13 +422,38 @@ class Orchestrator:
             tier, token_count = self.pruner.evaluate_threshold(history_str)
             print(f"[ORCHESTRATOR] Active prompt footprint: {token_count} tokens | Tier: {tier}")
 
-            if tier in ("RED", "CRITICAL"):
+            if tier in ("RED", "CRITICAL", "OVERFLOW"):
                 print(f"[ORCHESTRATOR] Utilization >= 70% threshold ({token_count} tokens). Initiating DTE-IS memory compaction...")
                 entropy_map = self.pruner.score_entropy(turn_log)
-                turn_log = self.pruner.compact_history(turn_log, entropy_map=entropy_map)
+                completed_tasks, pending_tasks = self._parse_task_md()
+                
+                touched_files = []
+                last_committed_file = None
+                for turn in turn_log:
+                    out = str(turn.get("output", ""))
+                    if '"commit_path"' in out:
+                        match = re.search(r'"commit_path":\s*"([^"]+)"', out)
+                        if match:
+                            p = match.group(1)
+                            touched_files.append(p)
+                            last_committed_file = p
+                
+                telemetry = {
+                    "completed_tasks": completed_tasks,
+                    "pending_tasks": pending_tasks,
+                    "touched_files": list(set(touched_files)),
+                    "last_committed_file": last_committed_file,
+                }
+                
+                turn_log = await self.pruner.compact_history(
+                    turn_logs              = turn_log,
+                    orchestrator_telemetry = telemetry,
+                    entropy_map            = entropy_map,
+                    emergency              = (tier == "OVERFLOW"),
+                )
                 print(f"[ORCHESTRATOR] Context compaction complete. Free memory buffer secured.")
 
-            elif tier == "OVERFLOW":
+            if tier == "OVERFLOW":
                 print(f"[CRITICAL ERROR] Context utilization exceeded 95% budget ({token_count}/8000 tokens).")
                 print(f"[ORCHESTRATOR] Executing emergency Git checkout rollback...")
                 rollback_ok, rollback_msg = await self._git_rollback()

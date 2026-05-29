@@ -142,7 +142,7 @@ def test_entropy_scoring_dte_is():
 # ---------------------------------------------------------------------------
 # 4. Test: Context Compaction Fidelity (compact_history)
 # ---------------------------------------------------------------------------
-def test_log_compaction_fidelity():
+async def test_log_compaction_fidelity():
     pruner = ContextVectorPruner(max_tokens=8000)
     
     # Mock heavy traceback logs
@@ -160,7 +160,7 @@ def test_log_compaction_fidelity():
     with patch.object(pruner, 'evaluate_threshold') as mock_eval:
         mock_eval.return_value = ("RED", pre_compact_tokens)
         
-        compacted = pruner.compact_history(turn_logs)
+        compacted = await pruner.compact_history(turn_logs)
         
         # Turn 0 must contain the dynamic Adaptive ESV system card
         assert compacted[0]["role"] == "system"
@@ -271,3 +271,215 @@ def test_esv_schema_adaptive_keys():
     assert esv_complex["active_error_regression"]["frequent_error"] == "NameError"
     assert esv_complex["last_committed_file"] == "backend/app/core/critic.py"
     assert esv_complex["recovery_checkpoint"] == 4
+
+
+# ---------------------------------------------------------------------------
+# EMM-03-A2: 12 Mock & Resilience Unit Tests
+# ---------------------------------------------------------------------------
+
+def test_prompt_assembly_completeness():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    turn_logs = [
+        {"role": "assistant", "turn_id": 1, "content": "TypeError in run_sandbox " * 20, "pin_priority": "HIGH"},
+        {"role": "assistant", "turn_id": 2, "content": "splice_node called. committed: true. " * 20, "pin_priority": "CRITICAL"},
+    ]
+    telemetry = {
+        "completed_tasks":     ["Step 1: Create CodeGenerator"],
+        "pending_tasks":       ["Step 2: Fix TypeError"],
+        "touched_files":       ["backend/app/core/code_generator.py"],
+        "last_committed_file": None,
+    }
+    report = {
+        "looping_detected": False,
+        "frequent_error": None,
+        "recurrence_count": 0,
+        "critique": ""
+    }
+    prompt = pruner._build_summarization_prompt(turn_logs, telemetry, report)
+    assert "Step 1: Create CodeGenerator" in prompt
+    assert "Step 2: Fix TypeError" in prompt
+    assert "backend/app/core/code_generator.py" in prompt
+    assert "PINNED" in prompt
+
+
+def test_json_extraction_strategy_1_clean():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    raw = '{"schema_version": "esv/v2", "global_objective": "Fix TypeError."}'
+    parsed = pruner._extract_and_validate_json(raw)
+    assert parsed is not None
+    assert parsed["schema_version"] == "esv/v2"
+    assert parsed["global_objective"] == "Fix TypeError."
+
+
+def test_json_extraction_strategy_2_fenced():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    raw = 'Here is the state vector as requested:\n```json\n{"schema_version": "esv/v2", "global_objective": "Fix TypeError."}\n```'
+    parsed = pruner._extract_and_validate_json(raw)
+    assert parsed is not None
+    assert parsed["schema_version"] == "esv/v2"
+
+
+def test_json_extraction_strategy_3_preamble_text():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    raw = 'Sure! I have analyzed the log. Here is the compiled state vector:\n{"schema_version": "esv/v2", "global_objective": "Fix TypeError."}\nI hope this helps!'
+    parsed = pruner._extract_and_validate_json(raw)
+    assert parsed is not None
+    assert parsed["schema_version"] == "esv/v2"
+
+
+def test_json_extraction_strategy_4_trailing_comma():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    raw = '{"schema_version": "esv/v2", "global_objective": "Fix the bug.",}'
+    parsed = pruner._extract_and_validate_json(raw)
+    assert parsed is not None
+    assert parsed["schema_version"] == "esv/v2"
+    assert parsed["global_objective"] == "Fix the bug."
+
+
+def test_json_extraction_strategy_5_truncated():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    raw = '{"schema_version": "esv/v2", "global_objective": "Fix the TypeError in run_sandbox by en'
+    parsed = pruner._extract_and_validate_json(raw)
+    assert parsed is not None
+    assert parsed["schema_version"] == "esv/v2"
+    assert parsed["global_objective"] == "Fix the TypeError in run_sandbox by en"
+
+
+def test_json_extraction_all_strategies_fail():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    raw = "This output contains no JSON at all. Just words."
+    parsed = pruner._extract_and_validate_json(raw)
+    assert parsed is None
+
+
+async def test_offline_fallback_triggers_on_urlerror():
+    import urllib.error
+    import time
+    pruner = ContextVectorPruner(max_tokens=8000)
+    turn_logs = [{"role": "user", "content": "Initial context"}]
+    telemetry = {"completed_tasks": [], "pending_tasks": []}
+    
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
+        t_start = time.perf_counter()
+        esv = await pruner.compile_state_vector(turn_logs, telemetry)
+        elapsed = time.perf_counter() - t_start
+        assert esv["$compiler"] == "python_fallback"
+        assert "$fallback_reason" in esv
+        assert "probe failed" in esv["$fallback_reason"] or "URLError" in esv["$fallback_reason"]
+        assert elapsed < 0.050
+
+
+async def test_offline_fallback_triggers_on_timeout():
+    import time
+    pruner = ContextVectorPruner(max_tokens=8000)
+    turn_logs = [{"role": "user", "content": "Initial context"}]
+    telemetry = {"completed_tasks": [], "pending_tasks": []}
+    
+    with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        t_start = time.perf_counter()
+        esv = await pruner.compile_state_vector(turn_logs, telemetry)
+        elapsed = time.perf_counter() - t_start
+        assert esv["$compiler"] == "python_fallback"
+        assert "$fallback_reason" in esv
+        assert elapsed < 0.050
+
+
+async def test_health_probe_skips_inference_on_failure():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    turn_logs = [{"role": "user", "content": "Initial context"}]
+    telemetry = {"completed_tasks": [], "pending_tasks": []}
+    
+    with patch.object(pruner, "_probe_llm_health", return_value=False) as mock_probe:
+        with patch.object(pruner, "_call_local_llm") as mock_llm:
+            esv = await pruner.compile_state_vector(turn_logs, telemetry)
+            mock_probe.assert_called_once()
+            mock_llm.assert_not_called()
+            assert esv["$compiler"] == "python_fallback"
+
+
+def test_token_budget_convergence():
+    pruner = ContextVectorPruner(max_tokens=8000, esv_token_cap=250)
+    esv = {
+        "schema_version": "esv/v2",
+        "global_objective": "Solve a very complex and highly descriptive issue that needs absolute attention in multiple areas." * 5,
+        "execution_state": {
+            "current_phase": "exception_debugging",
+            "touched_files": ["file1.py", "file2.py", "file3.py", "file4.py", "file5.py", "file6.py", "file7.py"]
+        },
+        "active_task_checklist": {
+            "completed": ["Task 1 verified and done", "Task 2 verified and done", "Task 3 verified and done", "Task 4 verified and done"],
+            "pending": ["Pending Task 1 details", "Pending Task 2 details"]
+        },
+        "last_known_error_regression": {
+            "exception_class": "TypeError",
+            "diagnosis_and_critique": "Make sure you review the sandbox args." * 10
+        },
+        "entropy_summary": {
+            "total_turns_processed": 10,
+            "critical_pins": 5,
+            "noise_turns_dropped": 3
+        }
+    }
+    
+    truncated = pruner._enforce_token_budget(esv)
+    assert pruner.count_tokens(json.dumps(truncated)) <= 250
+    assert truncated["global_objective"] is not None
+
+
+def test_causal_loop_alert_injection():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    esv = {
+        "last_known_error_regression": {
+            "looping_detected": True,
+            "exception_class": "TypeError",
+            "recurrence_count": 4,
+        }
+    }
+    report = {
+        "critique": "[CRITIQUE] Sandbox exec failed."
+    }
+    alert = pruner._check_regression_loop(esv, report)
+    assert alert is not None
+    assert "[CAUSAL_LOOP_ALERT]" in alert
+    assert "TypeError" in alert
+    assert "Sandbox exec failed." in alert
+
+
+def test_task_checklist_parity_enforcement():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    esv = {
+        "active_task_checklist": {
+            "completed": ["Task 1"],
+            "pending": ["Task 2"]
+        }
+    }
+    telemetry = {
+        "pending_tasks": ["Task 2", "Task 3"]
+    }
+    pruner._validate_esv_schema(esv, telemetry)
+    assert "Task 3" in esv["active_task_checklist"]["pending"]
+
+
+async def test_schema_version_tag_always_present():
+    pruner = ContextVectorPruner(max_tokens=8000)
+    turn_logs = [{"role": "user", "content": "Initial context"}]
+    telemetry = {"completed_tasks": [], "pending_tasks": []}
+    
+    # Test fallback path
+    with patch.object(pruner, "_probe_llm_health", return_value=False):
+        esv_fb = await pruner.compile_state_vector(turn_logs, telemetry)
+        assert esv_fb["schema_version"] == "esv/v2"
+        
+    # Test LLM compilation path
+    with patch.object(pruner, "_probe_llm_health", return_value=True):
+        mock_response = json.dumps({
+            "schema_version": "esv/v2",
+            "global_objective": "Verify systems.",
+            "execution_state": {"current_phase": "planning"},
+            "active_task_checklist": {"completed": [], "pending": []},
+            "last_known_error_regression": {},
+            "entropy_summary": {}
+        })
+        with patch.object(pruner, "_call_local_llm", return_value=mock_response):
+            esv_llm = await pruner.compile_state_vector(turn_logs, telemetry)
+            assert esv_llm["schema_version"] == "esv/v2"

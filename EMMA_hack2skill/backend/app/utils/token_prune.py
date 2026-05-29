@@ -25,6 +25,8 @@ Design authority: EMM-02-A5 Implementation Plan v2.0
 
 from __future__ import annotations
 
+import os
+import asyncio
 import difflib
 import json
 import re
@@ -152,6 +154,93 @@ class ContextOverflowError(RuntimeError):
     """
 
 
+class LLMUnavailableError(RuntimeError):
+    """
+    Raised internally when the local LLM endpoint is unreachable,
+    returns an HTTP error, or exceeds the configured timeout.
+    Always caught within compile_state_vector(); never propagates
+    to the orchestrator — the fallback ESV is injected instead.
+    """
+
+
+# =============================================================================
+# Prompts for Local LLM Summarization
+# =============================================================================
+
+_SUMMARIZATION_SYSTEM_PROMPT: str = """\
+You are EMMA_COMPILER, an internal memory compression engine for an autonomous AI coding agent.
+Your ONLY function is to read a developer-agent chat log and output a single valid JSON object.
+
+ABSOLUTE OUTPUT CONTRACT:
+- Output ONLY the raw JSON object. Nothing before it, nothing after it.
+- DO NOT output markdown code fences (no ```json, no ```).
+- DO NOT output any explanation, preamble, greeting, or summary text.
+- DO NOT output partial JSON. The object must be complete and syntactically valid.
+- The ENTIRE JSON output must be under 400 tokens when encoded with cl100k_base.
+- Every string value must be 1 sentence maximum. No bullet points inside strings.
+- If a field has no data, set it to null. Never omit a key.
+
+OUTPUT SCHEMA (fill every key — never remove a key):
+{
+  "schema_version": "esv/v2",
+  "global_objective": "<1-sentence synthesis of the primary coding task being solved>",
+  "execution_state": {
+    "current_phase": "<one of: planning|ast_patching|sandbox_execution|test_verification|exception_debugging|committed>",
+    "touched_files": ["<relative/path/to/file.py>"],
+    "last_committed_file": "<path or null>",
+    "stai_last_verdict": "<PASS or FAIL or null>"
+  },
+  "active_task_checklist": {
+    "completed": ["<finished task item verbatim from task.md>"],
+    "pending":   ["<remaining task item verbatim from task.md>"],
+    "completion_ratio": "<float 0.0-1.0>"
+  },
+  "last_known_error_regression": {
+    "exception_class":       "<ExceptionClass or null>",
+    "enclosing_scope":       "<function_name or null>",
+    "file_ref":              "<path:line or null>",
+    "recurrence_count":      "<int or null>",
+    "looping_detected":      "<true or false>",
+    "diagnosis_and_critique": "<1-sentence imperative remedy action>"
+  },
+  "entropy_summary": {
+    "total_turns_processed": "<int>",
+    "critical_pins":         "<int>",
+    "noise_turns_dropped":   "<int>",
+    "dominant_noise_type":   "<ExceptionClass or null>"
+  }
+}
+
+EXAMPLE OUTPUT (for reference — do not copy, synthesize from the log):
+{"schema_version":"esv/v2","global_objective":"Implement the CodeGenerator mutant sandbox and commit the winning patch to disk.","execution_state":{"current_phase":"exception_debugging","touched_files":["backend/app/core/code_generator.py","backend/app/core/critic.py"],"last_committed_file":null,"stai_last_verdict":"FAIL"},"active_task_checklist":{"completed":["Create CodeGenerator class","Implement generate_mutants method"],"pending":["Fix TypeError in sandbox execution","Run test suite"],"completion_ratio":0.5},"last_known_error_regression":{"exception_class":"TypeError","enclosing_scope":"run_sandbox","file_ref":"backend/app/core/code_generator.py:142","recurrence_count":4,"looping_detected":true,"diagnosis_and_critique":"Ensure sandbox_globals passes a dict to exec, not a list; verify __builtins__ key is present."},"entropy_summary":{"total_turns_processed":18,"critical_pins":2,"noise_turns_dropped":11,"dominant_noise_type":"TypeError"}}
+"""
+
+_SUMMARIZATION_USER_TEMPLATE: str = """\
+=== EMMA AGENT LOG DIGEST ===
+Total turns in this session: {total_turns}
+Turns included below (filtered by entropy rank): {included_turns}
+Turns dropped as noise: {dropped_turns}
+
+=== ORCHESTRATOR TELEMETRY ===
+Completed tasks: {completed_tasks}
+Pending tasks:   {pending_tasks}
+Touched files:   {touched_files}
+Last committed:  {last_committed_file}
+
+=== ACTIVE ERROR REGRESSION ===
+Looping detected: {looping_detected}
+Exception class:  {frequent_error}
+Recurrence count: {recurrence_count}
+Critique:         {critique}
+
+=== FILTERED TURN LOG (chronological, entropy-ranked) ===
+{filtered_turn_content}
+
+=== COMPILATION INSTRUCTION ===
+Compile the above into the JSON state vector. Remember: raw JSON only, no fences, no text.
+"""
+
+
 # ---------------------------------------------------------------------------
 # ContextVectorPruner
 # ---------------------------------------------------------------------------
@@ -221,8 +310,12 @@ class ContextVectorPruner:
 
     def __init__(
         self,
-        max_tokens:    int = 8000,
-        encoding_name: str = "cl100k_base",
+        max_tokens:    int            = 8000,
+        encoding_name: str            = "cl100k_base",
+        llm_url:       Optional[str]  = None,
+        model:         Optional[str]  = None,
+        llm_timeout:   float          = 8.0,
+        esv_token_cap: int            = 400,
     ) -> None:
         self.max_tokens      = max_tokens
         self.encoding_name   = encoding_name
@@ -231,6 +324,11 @@ class ContextVectorPruner:
         self.threshold_crit  = int(self.TIER_CRITICAL * max_tokens)  # 6800
         self.threshold_oflow = int(self.TIER_OVERFLOW * max_tokens)  # 7600
         self.target_tokens   = int(self.TARGET_POST_COMPACTION_RATIO * max_tokens)  # 2240
+
+        self.llm_url     = llm_url  or os.environ.get("EMMA_LLM_URL",     "http://localhost:11434/v1")
+        self.model       = model    or os.environ.get("EMMA_LLM_MODEL",   "qwen2.5-coder")
+        self.llm_timeout = float(       os.environ.get("EMMA_LLM_TIMEOUT", str(llm_timeout)))
+        self.esv_token_cap = int(       os.environ.get("EMMA_ESV_TOKEN_CAP", str(esv_token_cap)))
 
     # ------------------------------------------------------------------
     # 1. Token Counting
@@ -541,9 +639,10 @@ class ContextVectorPruner:
     # 4. Compact History
     # ------------------------------------------------------------------
 
-    def compact_history(
+    async def compact_history(
         self,
         turn_logs:   List[Dict[str, Any]],
+        orchestrator_telemetry: Optional[Dict[str, Any]] = None,
         entropy_map: Optional[Dict[str, Any]] = None,
         emergency:   bool = False,
     ) -> List[Dict[str, Any]]:
@@ -568,6 +667,8 @@ class ContextVectorPruner:
         ----------
         turn_logs:
             Full chronological turn history.
+        orchestrator_telemetry:
+            Active task list and touched file telemetry from orchestrator loop.
         entropy_map:
             Pre-computed DTE-IS map from ``score_entropy``.  If ``None``,
             ``score_entropy`` is called automatically.
@@ -666,36 +767,28 @@ class ContextVectorPruner:
                     output_turns.append(stub)
                     dropped.append(int(turn_id) if str(turn_id).isdigit() else idx + 1)
 
-        # Assemble A-ESV metadata block and prepend as system context
-        pre_count  = tokens
-        post_str   = json.dumps(output_turns, ensure_ascii=False)
-        post_count = self.count_tokens(post_str)
-        cr_achieved = round(post_count / max(pre_count, 1), 4)
-
-        session_meta = {
-            "max_tokens":              self.max_tokens,
-            "pre_compaction_tokens":   pre_count,
-            "post_compaction_tokens":  post_count,
-            "compression_ratio_achieved": cr_achieved,
-            "compaction_tier":         tier,
-        }
-
-        esv = self._assemble_esv(
-            session_meta       = session_meta,
-            entropy_map        = entropy_map,
-            pinned             = pinned,
-            condensed          = condensed,
-            dropped            = dropped,
-            stai_reports       = stai_reports,
-            error_regressions  = error_regressions,
-            last_committed_file= last_committed_file,
-            recovery_checkpoint= recovery_checkpoint,
+        # Assemble A-ESV using local LLM or Python fallback
+        esv = await self.compile_state_vector(
+            turn_logs              = turn_logs,
+            orchestrator_telemetry = orchestrator_telemetry,
         )
 
         # Inject the A-ESV as a leading system message
+        esv_content = f"[A-ESV COMPACTION RECORD]\n{json.dumps(esv, indent=2)}"
+        
+        # Check for error regression loop alert
+        loop_alert = self._check_regression_loop(
+            esv                     = esv,
+            error_regression_report = esv.get("last_known_error_regression", {}),
+        )
+        if loop_alert:
+            esv_content += f"\n\n{loop_alert}"
+            if "entropy_summary" in esv and isinstance(esv["entropy_summary"], dict):
+                esv["entropy_summary"]["loop_alert_injected"] = True
+
         esv_turn = {
             "role":    "system",
-            "content": f"[A-ESV COMPACTION RECORD]\n{json.dumps(esv, indent=2)}",
+            "content": esv_content,
             "turn_id": 0,
         }
 
@@ -1067,3 +1160,530 @@ class ContextVectorPruner:
         if "turn_id" in turn:
             stub["turn_id"] = turn["turn_id"]
         return stub
+
+    # ------------------------------------------------------------------
+    # EMM-03-A2: State Vector Compiler Methods
+    # ------------------------------------------------------------------
+
+    async def _probe_llm_health(self) -> bool:
+        """
+        Send a GET request to {llm_url}/models with a 2-second timeout.
+        Returns True if the endpoint responds with HTTP 200; False otherwise.
+        This avoids the full 8-second inference timeout on cold-start failures.
+        """
+        def _sync_probe() -> bool:
+            import urllib.request
+            import urllib.error
+            try:
+                # Support `/models` for health checking
+                req = urllib.request.Request(f"{self.llm_url}/models", method="GET")
+                with urllib.request.urlopen(req, timeout=2.0) as r:
+                    return r.status == 200
+            except Exception:
+                return False
+
+        return await asyncio.to_thread(_sync_probe)
+
+    def _sync_http_post(self, system_prompt: str, user_message: str) -> str:
+        """
+        Synchronous urllib POST worker. Executes in a thread pool via
+        asyncio.to_thread — never called directly from async context.
+        """
+        import urllib.request
+        import urllib.error
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_message},
+            ],
+            "temperature": 0.0,       # Deterministic output — no sampling randomness
+            "max_tokens":  600,        # Headroom above the 400-token ESV cap
+            "stream":      False,      # Full response, not SSE stream
+        }
+
+        body = json.dumps(payload).encode("utf-8")
+        url = f"{self.llm_url}/chat/completions"
+        req = urllib.request.Request(
+            url     = url,
+            data    = body,
+            method  = "POST",
+            headers = {
+                "Content-Type": "application/json",
+                "Accept":       "application/json",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.llm_timeout) as resp:
+                raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+            content = data["choices"][0]["message"]["content"]
+            return content
+        except urllib.error.URLError as exc:
+            raise LLMUnavailableError(f"LLM endpoint unreachable: {exc.reason}") from exc
+        except (KeyError, IndexError, json.JSONDecodeError) as exc:
+            raise LLMUnavailableError(f"LLM response malformed: {exc}") from exc
+        except TimeoutError as exc:
+            raise LLMUnavailableError(f"LLM request timed out after {self.llm_timeout}s") from exc
+        except Exception as exc:
+            raise LLMUnavailableError(f"Unexpected LLM call error: {exc}") from exc
+
+    async def _call_local_llm(
+        self,
+        system_prompt: str,
+        user_message:  str,
+    ) -> str:
+        """
+        Async wrapper around _sync_http_post.
+        Offloads blocking urllib call to the thread pool via asyncio.to_thread.
+        """
+        return await asyncio.to_thread(
+            self._sync_http_post,
+            system_prompt,
+            user_message,
+        )
+
+    def _build_summarization_prompt(
+        self,
+        filtered_turns: List[Dict[str, Any]],
+        orchestrator_telemetry: Dict[str, Any],
+        error_regression_report: Dict[str, Any],
+    ) -> str:
+        """
+        Assembles system + user prompt strings from filtered turn logs and orchestrator telemetry.
+        """
+        # Assemble filtered turn content with hard length cap of max_tokens * 0.50 tokens
+        turn_contents: List[str] = []
+        for turn in filtered_turns:
+            role = turn.get("role", "assistant")
+            t_id = turn.get("turn_id", "?")
+            entropy = turn.get("entropy", 0.5)
+            content = turn.get("content", "")
+            
+            if "PRUNED" in content:
+                # Stub / noise
+                exc_type = self._quick_exception_name(content) or "Noise"
+                turn_contents.append(f"[TURN {t_id} | DROPPED] {exc_type}")
+            elif "[ERR]" in content or "[AT]" in content or len(content) < 300:
+                # Condensed MEDIUM or LOW
+                err_sig = self._extract_error_signature(content)
+                exc_type = err_sig["exception_type"] or "Warning"
+                file_ref = f"{err_sig['file_path']}:{err_sig['line_number']}" if err_sig['file_path'] else "null"
+                turn_contents.append(f"[TURN {t_id} | CONDENSED] {exc_type} @ {file_ref}")
+            else:
+                # High / Critical verbatim
+                turn_contents.append(f"[TURN {t_id} | {role} | entropy={entropy:.2f} | PINNED]\n{content}")
+
+        filtered_turn_content = "\n".join(turn_contents)
+        
+        # Truncate content to 50% max window size in characters if it's too long
+        max_chars = int(self.max_tokens * 4.0 * 0.5)
+        if len(filtered_turn_content) > max_chars:
+            filtered_turn_content = filtered_turn_content[:max_chars] + "\n... [TRUNCATED] ..."
+
+        # Extract telemetry fields with safe defaults
+        completed_tasks = orchestrator_telemetry.get("completed_tasks", [])
+        pending_tasks = orchestrator_telemetry.get("pending_tasks", [])
+        touched_files = orchestrator_telemetry.get("touched_files", [])
+        last_committed_file = orchestrator_telemetry.get("last_committed_file")
+
+        # Extract active error regression report fields
+        looping_detected = error_regression_report.get("looping_detected", False)
+        frequent_error = error_regression_report.get("frequent_error")
+        recurrence_count = error_regression_report.get("recurrence_count")
+        critique = error_regression_report.get("critique", "")
+
+        # Compute counts
+        total_turns = len(filtered_turns)
+        dropped_turns = sum(1 for turn in filtered_turns if "PRUNED" in str(turn.get("content", "")))
+        included_turns = total_turns - dropped_turns
+
+        return _SUMMARIZATION_USER_TEMPLATE.format(
+            total_turns           = total_turns,
+            included_turns        = included_turns,
+            dropped_turns         = dropped_turns,
+            completed_tasks       = json.dumps(completed_tasks),
+            pending_tasks         = json.dumps(pending_tasks),
+            touched_files         = json.dumps(touched_files),
+            last_committed_file   = json.dumps(last_committed_file),
+            looping_detected      = json.dumps(looping_detected),
+            frequent_error        = json.dumps(frequent_error),
+            recurrence_count      = json.dumps(recurrence_count),
+            critique              = critique,
+            filtered_turn_content = filtered_turn_content,
+        )
+
+    def _extract_and_validate_json(self, raw_response: str) -> Optional[Dict[str, Any]]:
+        """
+        Five-strategy JSON extraction and validation pipeline.
+        Returns a parsed dictionary, or None if all extraction strategies fail.
+        """
+        raw_response = raw_response.strip()
+        if not raw_response:
+            return None
+
+        # --- Strategy 1: Raw Parse ---
+        try:
+            return json.loads(raw_response)
+        except Exception:
+            pass
+
+        # --- Strategy 2: Fence Stripper ---
+        fence_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+        if fence_match:
+            try:
+                return json.loads(fence_match.group(1).strip())
+            except Exception:
+                pass
+
+        # --- Strategy 3: Last Object Extractor (Brace Depth counter) ---
+        last_obj_str = self._extract_last_json_object(raw_response)
+        if last_obj_str:
+            try:
+                return json.loads(last_obj_str)
+            except Exception:
+                pass
+
+        # --- Strategy 4: Trailing Comma Repair ---
+        candidate = last_obj_str or raw_response
+        cleaned_candidate = re.sub(r',\s*([}\]])', r'\1', candidate)
+        try:
+            return json.loads(cleaned_candidate)
+        except Exception:
+            pass
+
+        # --- Strategy 5: Schema-Fill Partial Repair ---
+        try:
+            repaired: Dict[str, Any] = {}
+            pairs = re.findall(r'"(\w+)":\s*(?:"([^"]*)"|(?:"([^"]*)$)|(\d+(?:\.\d+)?)|(true|false|null))', candidate)
+            for key, val_str, val_trunc, val_num, val_lit in pairs:
+                if val_str:
+                    repaired[key] = val_str
+                elif val_trunc:
+                    repaired[key] = val_trunc
+                elif val_num:
+                    repaired[key] = float(val_num) if "." in val_num else int(val_num)
+                elif val_lit:
+                    if val_lit == "true":
+                        repaired[key] = True
+                    elif val_lit == "false":
+                        repaired[key] = False
+                    else:
+                        repaired[key] = None
+            
+            if repaired:
+                required_keys = ["schema_version", "global_objective", "execution_state", 
+                                 "active_task_checklist", "last_known_error_regression", "entropy_summary"]
+                for k in required_keys:
+                    if k not in repaired:
+                        repaired[k] = None
+                return repaired
+        except Exception:
+            pass
+
+        return None
+
+    def _extract_last_json_object(self, text: str) -> Optional[str]:
+        """
+        Walk text right-to-left finding the last balanced {…} block.
+        Uses a brace-depth counter — immune to nested objects and arrays.
+        """
+        depth = 0
+        end = -1
+        for i in range(len(text) - 1, -1, -1):
+            ch = text[i]
+            if ch == '}':
+                if end == -1:
+                    end = i
+                depth += 1
+            elif ch == '{':
+                depth -= 1
+                if depth == 0 and end != -1:
+                    return text[i:end + 1]
+        return None
+
+    def _validate_esv_schema(
+        self,
+        esv: Dict[str, Any],
+        orchestrator_telemetry: Dict[str, Any],
+    ) -> bool:
+        """
+        Validate the parsed JSON ESV dictionary against the v2 schema invariants.
+        Returns True if valid (or repaired to a valid state); False otherwise.
+        """
+        required_keys = [
+            "schema_version", "global_objective", "execution_state",
+            "active_task_checklist", "last_known_error_regression", "entropy_summary"
+        ]
+        
+        for k in required_keys:
+            if k not in esv:
+                esv[k] = {} if "checklist" in k or "regression" in k or "summary" in k else None
+
+        if not isinstance(esv["active_task_checklist"], dict):
+            esv["active_task_checklist"] = {}
+        
+        checklist = esv["active_task_checklist"]
+        if "completed" not in checklist or not isinstance(checklist["completed"], list):
+            checklist["completed"] = []
+        if "pending" not in checklist or not isinstance(checklist["pending"], list):
+            checklist["pending"] = []
+
+        telemetry_pending = orchestrator_telemetry.get("pending_tasks", [])
+        for task in telemetry_pending:
+            if task not in checklist["pending"]:
+                checklist["pending"].append(task)
+                
+        n_comp = len(checklist["completed"])
+        n_pend = len(checklist["pending"])
+        checklist["completion_ratio"] = round(n_comp / max(n_comp + n_pend, 1), 4)
+
+        if not esv.get("global_objective"):
+            esv["global_objective"] = "Active solver session."
+            
+        if not isinstance(esv["execution_state"], dict):
+            esv["execution_state"] = {}
+            
+        exec_state = esv["execution_state"]
+        allowed_phases = ["planning", "ast_patching", "sandbox_execution", "test_verification", "exception_debugging", "committed"]
+        if exec_state.get("current_phase") not in allowed_phases:
+            exec_state["current_phase"] = "exception_debugging"
+
+        if not isinstance(esv["last_known_error_regression"], dict):
+            esv["last_known_error_regression"] = {}
+            
+        if not isinstance(esv["entropy_summary"], dict):
+            esv["entropy_summary"] = {}
+
+        return True
+
+    def _enforce_token_budget(self, esv: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convergence enforcement algorithm. Truncates fields per priority order
+        until the serialized token count is <= esv_token_cap.
+        """
+        serialized = json.dumps(esv, ensure_ascii=False)
+        if self.count_tokens(serialized) <= self.esv_token_cap:
+            return esv
+
+        # 1. Truncate entropy_summary
+        esv["entropy_summary"] = {
+            "total_turns_processed": esv.get("entropy_summary", {}).get("total_turns_processed", 0)
+        }
+        serialized = json.dumps(esv, ensure_ascii=False)
+        if self.count_tokens(serialized) <= self.esv_token_cap:
+            return esv
+
+        # 2. Truncate completed tasks list to 3 most recent
+        checklist = esv.get("active_task_checklist", {})
+        if checklist.get("completed"):
+            checklist["completed"] = checklist["completed"][-3:]
+        serialized = json.dumps(esv, ensure_ascii=False)
+        if self.count_tokens(serialized) <= self.esv_token_cap:
+            return esv
+
+        # 3. Truncate touched files
+        exec_state = esv.get("execution_state", {})
+        if exec_state.get("touched_files"):
+            exec_state["touched_files"] = exec_state["touched_files"][-5:]
+        serialized = json.dumps(esv, ensure_ascii=False)
+        if self.count_tokens(serialized) <= self.esv_token_cap:
+            return esv
+
+        # 4. Truncate critique message to 100 chars
+        regression = esv.get("last_known_error_regression", {})
+        if regression.get("diagnosis_and_critique"):
+            regression["diagnosis_and_critique"] = regression["diagnosis_and_critique"][:100]
+        serialized = json.dumps(esv, ensure_ascii=False)
+        if self.count_tokens(serialized) <= self.esv_token_cap:
+            return esv
+
+        # 5. Truncate global objective to 60 chars
+        if esv.get("global_objective"):
+            esv["global_objective"] = esv["global_objective"][:60]
+
+        return esv
+
+    def _build_fallback_esv(
+        self,
+        filtered_turns: List[Dict[str, Any]],
+        orchestrator_telemetry: Dict[str, Any],
+        error_regression_report: Dict[str, Any],
+        reason: str,
+    ) -> Dict[str, Any]:
+        """
+        Deterministic Python fallback compiler. Constructs a complete, schema-valid
+        A-ESV entirely from Python-extracted metadata. Executes in <= 1 ms.
+        """
+        global_objective = "Active solver session."
+        for turn in filtered_turns:
+            content = str(turn.get("content", "")).strip()
+            if content and not content.startswith("[PRUNED"):
+                first_line = content.splitlines()[0] if content else ""
+                if len(first_line) > 10:
+                    global_objective = first_line[:120]
+                    break
+
+        current_phase = "exception_debugging"
+        all_logs = " ".join(str(turn.get("content", "")) for turn in filtered_turns)
+        if "splice_node" in all_logs or "stai" in all_logs:
+            current_phase = "ast_patching"
+        if "FAILED" in all_logs or "test_suite_failed" in all_logs:
+            current_phase = "test_verification"
+
+        completed_tasks = orchestrator_telemetry.get("completed_tasks", [])
+        pending_tasks = orchestrator_telemetry.get("pending_tasks", [])
+        touched_files = orchestrator_telemetry.get("touched_files", [])
+        last_committed_file = orchestrator_telemetry.get("last_committed_file")
+
+        n_comp = len(completed_tasks)
+        n_pend = len(pending_tasks)
+        completion_ratio = round(n_comp / max(n_comp + n_pend, 1), 4)
+
+        exception_class = error_regression_report.get("frequent_error")
+        recurrence_count = error_regression_report.get("recurrence_count")
+        looping_detected = error_regression_report.get("looping_detected", False)
+        critique = error_regression_report.get("critique", "")
+
+        total_turns = len(filtered_turns)
+        critical_pins = sum(1 for turn in filtered_turns if turn.get("pin_priority") in ("CRITICAL", "HIGH"))
+        dropped_turns = sum(1 for turn in filtered_turns if "PRUNED" in str(turn.get("content", "")))
+
+        esv: Dict[str, Any] = {
+            "$schema":             "emma/esv/v2",
+            "$description":         "Adaptive Execution State Vector — compiled by Python fallback",
+            "$compiler":            "python_fallback",
+            "$fallback_reason":     reason,
+            "$compiled_at_turn":    total_turns,
+            "schema_version":       "esv/v2",
+            "global_objective":     global_objective,
+            "execution_state": {
+                "current_phase":       current_phase,
+                "touched_files":       touched_files,
+                "last_committed_file": last_committed_file,
+                "stai_last_verdict":   "FAIL" if "stai" in all_logs and "FAIL" in all_logs else None,
+            },
+            "active_task_checklist": {
+                "completed":        completed_tasks,
+                "pending":          pending_tasks,
+                "completion_ratio": completion_ratio,
+            },
+            "last_known_error_regression": {
+                "exception_class":       exception_class,
+                "enclosing_scope":       None,
+                "file_ref":              None,
+                "recurrence_count":      recurrence_count,
+                "looping_detected":      looping_detected,
+                "diagnosis_and_critique": critique[:200] if critique else None,
+            },
+            "entropy_summary": {
+                "total_turns_processed": total_turns,
+                "critical_pins":         critical_pins,
+                "noise_turns_dropped":   dropped_turns,
+                "dominant_noise_type":   exception_class,
+            }
+        }
+
+        return esv
+
+    def _check_regression_loop(
+        self,
+        esv: Dict[str, Any],
+        error_regression_report: Dict[str, Any],
+    ) -> Optional[str]:
+        """
+        Check if an error regression loop is occurring.
+        If looping_detected is True, return a structured loop alert warning message.
+        """
+        regression = esv.get("last_known_error_regression", {})
+        if regression.get("looping_detected"):
+            exc_class = regression.get("exception_class", "Error")
+            count = regression.get("recurrence_count", 3)
+            critique = error_regression_report.get("critique", "")
+            
+            if critique.startswith("[CRITIQUE]"):
+                critique = critique[10:].strip()
+                
+            alert = (
+                f"[CAUSAL_LOOP_ALERT] {exc_class} has occurred {count} times consecutively. "
+                "The standard fix has failed. You MUST change your approach.\n"
+                f"Critique: {critique}\n"
+                "Do NOT repeat the same patch. Attempt a structurally different implementation."
+            )
+            return alert
+        return None
+
+    async def compile_state_vector(
+        self,
+        turn_logs: List[Dict[str, Any]],
+        orchestrator_telemetry: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Assembles logs, calls local LLM, parses JSON response,
+        validates the schema, and returns a valid A-ESV dictionary.
+        """
+        if orchestrator_telemetry is None:
+            orchestrator_telemetry = {}
+
+        stderr_history: List[str] = []
+        for turn in turn_logs:
+            content = str(turn.get("content", ""))
+            if "Traceback" in content or "FAILED" in content:
+                stderr_history.append(content)
+        
+        try:
+            from app.core.critic import CodeCritic
+            critic = CodeCritic()
+            error_report = critic.analyze_errors(stderr_history)
+        except Exception:
+            error_report = {
+                "looping_detected": False,
+                "frequent_error":   self._quick_exception_name(" ".join(stderr_history)),
+                "recurrence_count": len(stderr_history),
+                "critique":         "",
+            }
+
+        online = await self._probe_llm_health()
+        if not online:
+            esv = self._build_fallback_esv(
+                filtered_turns          = turn_logs,
+                orchestrator_telemetry   = orchestrator_telemetry,
+                error_regression_report  = error_report,
+                reason                  = "Local LLM health probe failed (endpoint offline)",
+            )
+            return esv
+
+        user_message = self._build_summarization_prompt(
+            filtered_turns          = turn_logs,
+            orchestrator_telemetry   = orchestrator_telemetry,
+            error_regression_report  = error_report,
+        )
+
+        try:
+            raw_response = await self._call_local_llm(
+                system_prompt = _SUMMARIZATION_SYSTEM_PROMPT,
+                user_message  = user_message,
+            )
+            
+            esv = self._extract_and_validate_json(raw_response)
+            
+            if esv is None:
+                raise ValueError("JSON parsing and recovery strategies exhausted")
+                
+            esv["$compiler"] = "llm"
+            esv["$compiled_at_turn"] = len(turn_logs)
+            
+            self._validate_esv_schema(esv, orchestrator_telemetry)
+            self._enforce_token_budget(esv)
+            
+        except Exception as exc:
+            esv = self._build_fallback_esv(
+                filtered_turns          = turn_logs,
+                orchestrator_telemetry   = orchestrator_telemetry,
+                error_regression_report  = error_report,
+                reason                  = f"LLM error: {type(exc).__name__}: {exc}",
+            )
+
+        return esv
