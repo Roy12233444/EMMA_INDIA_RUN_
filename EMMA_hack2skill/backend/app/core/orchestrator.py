@@ -18,7 +18,7 @@ import shlex
 import os
 import re
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from app.core.code_generator import CodeGenerator
 from app.utils.token_prune import ContextVectorPruner, ContextOverflowError
 
@@ -323,8 +323,6 @@ class Orchestrator:
     def _parse_task_md(self) -> Tuple[List[str], List[str]]:
         completed = []
         pending = []
-        # Find task.md relative to workspace or direct absolute path
-        # Try both the workspace root and EMMA_hack2skill folder
         paths_to_try = [
             os.path.join(self.workspace_path, "task.md"),
             os.path.join(self.workspace_path, "EMMA_hack2skill", "task.md"),
@@ -357,7 +355,18 @@ class Orchestrator:
     # Core Solver Loop
     # ------------------------------------------------------------------
 
-    async def solve(self, task_description: str, target_file: str = "backend/app/core/executor.py") -> Dict[str, Any]:
+    async def solve(
+        self,
+        task_description: str,
+        target_file: str = "backend/app/core/executor.py",
+        on_turn_start: Optional[Callable[[int], None]] = None,
+        on_context_compressed: Optional[Callable[[int, int], None]] = None,
+        on_token_peak: Optional[Callable[[int], None]] = None,
+        on_mutants_graded: Optional[Callable[[list], None]] = None,
+        on_residual: Optional[Callable[[float], None]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+        on_request_steering: Optional[Callable[[str], str]] = None,
+    ) -> Dict[str, Any]:
         """
         Execute EMMA's primary metacognitive solver loop.
 
@@ -370,6 +379,20 @@ class Orchestrator:
             Human-readable description of the task the agent is solving.
         target_file : str
             Path to the file to modify, relative to workspace_path.
+        on_turn_start : Callable
+            Callback triggered at start of each solver turn.
+        on_context_compressed : Callable
+            Callback triggered when context is compressed.
+        on_token_peak : Callable
+            Callback triggered with active token count peak.
+        on_mutants_graded : Callable
+            Callback triggered with list of graded mutants.
+        on_residual : Callable
+            Callback triggered with latest loop residual score.
+        on_log : Callable
+            Callback triggered to send logging statements to terminal dashboard.
+        on_request_steering : Callable
+            Callback triggered to request human steering hint when stuck.
 
         Returns
         -------
@@ -383,27 +406,59 @@ class Orchestrator:
             When the convergence monitor detects a stalled infinite regression
             and the workspace has been rolled back to a safe state.
         """
-        print(
-            f"[ORCHESTRATOR] Initiating Causal Solver Loop.\n"
-            f"[ORCHESTRATOR] Task: {task_description}\n"
-            f"[ORCHESTRATOR] Target File: {target_file}\n"
-            f"[ORCHESTRATOR] Max Turns: {self.max_turns} | "
-            f"Stall Threshold: {self.loop_threshold}"
+        def _log(msg: str) -> None:
+            clean_msg = re.sub(r"\[/?.*?\]", "", msg)
+            print(f"[ORCHESTRATOR] {clean_msg}")
+            if on_log:
+                on_log(msg)
+
+        _log(
+            f"Initiating Causal Solver Loop.\n"
+            f"  Task: {task_description}\n"
+            f"  Target File: {target_file}\n"
+            f"  Max Turns: {self.max_turns} | Stall Threshold: {self.loop_threshold}"
         )
 
         # ----------------------------------------------------------------
         # Gate 0: Pre-flight workspace check
         # ----------------------------------------------------------------
-        if not os.path.isdir(os.path.join(self.workspace_path, ".git")):
+        git_found = False
+        curr = self.workspace_path
+        while True:
+            if os.path.isdir(os.path.join(curr, ".git")):
+                git_found = True
+                break
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+            
+        if not git_found:
+            try:
+                import subprocess as sp
+                res = sp.run(
+                    ["git", "rev-parse", "--is-inside-work-tree"],
+                    cwd=self.workspace_path,
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if res.returncode == 0 and "true" in res.stdout.strip().lower():
+                    git_found = True
+            except Exception:
+                pass
+
+        if not git_found:
             raise EnvironmentError(
-                f"[ORCHESTRATOR] No .git directory found at: {self.workspace_path}\n"
+                f"[ORCHESTRATOR] No .git directory found at or above: {self.workspace_path}\n"
                 "Git rollback safeguards require a valid Git repository."
             )
 
         # ----------------------------------------------------------------
-        # Initialise Causal Convergence Monitor
+        # Initialise Causal Convergence Monitor & Steering Memory
         # ----------------------------------------------------------------
         monitor = CausalConvergenceMonitor(loop_threshold=self.loop_threshold)
+        self.active_hints = []
 
         turn_log: List[Dict[str, Any]] = []
         loop_turn = 0
@@ -413,17 +468,21 @@ class Orchestrator:
         # ----------------------------------------------------------------
         while loop_turn < self.max_turns:
             loop_turn += 1
-            print(f"\n[ORCHESTRATOR] ── Cycle Turn #{loop_turn}/{self.max_turns} ──")
+            if on_turn_start:
+                on_turn_start(loop_turn)
+            _log(f"── Cycle Turn #{loop_turn}/{self.max_turns} ──")
 
             # ----------------------------------------------------------------
             # ACTIVE MEMORY MONITORING & CONTEXT COMPACTION
             # ----------------------------------------------------------------
             history_str = json.dumps(turn_log, ensure_ascii=False)
             tier, token_count = self.pruner.evaluate_threshold(history_str)
-            print(f"[ORCHESTRATOR] Active prompt footprint: {token_count} tokens | Tier: {tier}")
+            if on_token_peak:
+                on_token_peak(token_count)
+            _log(f"Active prompt footprint: {token_count} tokens | Tier: {tier}")
 
             if tier in ("RED", "CRITICAL", "OVERFLOW"):
-                print(f"[ORCHESTRATOR] Utilization >= 70% threshold ({token_count} tokens). Initiating DTE-IS memory compaction...")
+                _log(f"Utilization >= 70% threshold ({token_count} tokens). Initiating DTE-IS memory compaction...")
                 entropy_map = self.pruner.score_entropy(turn_log)
                 completed_tasks, pending_tasks = self._parse_task_md()
                 
@@ -445,19 +504,25 @@ class Orchestrator:
                     "last_committed_file": last_committed_file,
                 }
                 
+                # Capture current logs to know rotation reduction
+                raw_len = len(history_str)
                 turn_log = await self.pruner.compact_history(
                     turn_logs              = turn_log,
                     orchestrator_telemetry = telemetry,
                     entropy_map            = entropy_map,
                     emergency              = (tier == "OVERFLOW"),
                 )
-                print(f"[ORCHESTRATOR] Context compaction complete. Free memory buffer secured.")
+                compacted_str = json.dumps(turn_log, ensure_ascii=False)
+                comp_len = len(compacted_str)
+                if on_context_compressed:
+                    on_context_compressed(raw_len, comp_len)
+                _log(f"Context compaction complete. Free memory buffer secured.")
 
             if tier == "OVERFLOW":
-                print(f"[CRITICAL ERROR] Context utilization exceeded 95% budget ({token_count}/8000 tokens).")
-                print(f"[ORCHESTRATOR] Executing emergency Git checkout rollback...")
+                _log(f"[CRITICAL ERROR] Context utilization exceeded 95% budget ({token_count}/8000 tokens).")
+                _log(f"Executing emergency Git checkout rollback...")
                 rollback_ok, rollback_msg = await self._git_rollback()
-                print(rollback_msg)
+                _log(rollback_msg)
                 
                 raise CausalInstabilityException(
                     f"Cognitive memory overflow detected at turn #{loop_turn} ({token_count} tokens). Safe rollback applied.",
@@ -468,67 +533,89 @@ class Orchestrator:
             # ============================================================
             # Step 1: CODE GENERATION (Evolutionary Mutant Sandboxing)
             # ============================================================
-            print(f"[ORCHESTRATOR] [Step 1] Initializing Evolutionary Mutant Selection...")
+            _log(f"[Step 1] Initializing Evolutionary Mutant Selection...")
+            
+            # Inject active steering hints into task description
+            current_task = task_description
+            if self.active_hints:
+                hints_block = "\n".join(f"• {h}" for h in self.active_hints)
+                current_task = f"{task_description}\n\n[USER STEERING HINTS (FOLLOW THESE INSTRUCTIONS STRICTLY)]:\n{hints_block}"
+                
             generator = CodeGenerator(workspace_path=self.workspace_path)
             gen_report = await generator.generate_and_apply_patch(
                 file_path=target_file,
-                task=task_description
+                task=current_task
             )
-            print(
-                f"[ORCHESTRATOR] Code generation completed. "
-                f"Winner mutant: {gen_report.get('winner_label', 'None')} | "
+            
+            winner_label = gen_report.get("winner_label", "None")
+            _log(
+                f"Code generation completed. "
+                f"Winner mutant: {winner_label} | "
                 f"Committed successfully: {gen_report.get('committed', False)}"
             )
             if gen_report.get("error"):
-                print(f"[ORCHESTRATOR] Generation info: {gen_report['error']}")
+                _log(f"Generation info: {gen_report['error']}")
 
+            # Trigger mutants graded callback
+            if on_mutants_graded and gen_report.get("mutants"):
+                graded_list = []
+                for m in gen_report["mutants"]:
+                    m_code = m.get("code", "")
+                    lines_count = len(m_code.splitlines()) if m_code else 0
+                    is_winner = gen_report.get("winner_label") == m.get("label")
+                    rejected = not m.get("syntax_valid", False) or not m.get("security_clean", False) or not m.get("exec_success", False)
+                    lat_s = m.get("exec_latency_ms", 0.0) / 1000.0 if m.get("exec_latency_ms") else 0.0
+                    
+                    m_label = f"Mutant {m.get('label', '')}"
+                    
+                    graded_list.append({
+                        "label": m_label,
+                        "syntax_valid": m.get("syntax_valid", False),
+                        "lines": lines_count,
+                        "latency": lat_s,
+                        "base_score": 100.0,
+                        "length_penalty": m.get("length_penalty", 0.0),
+                        "latency_penalty": m.get("latency_penalty", 0.0),
+                        "total_score": m.get("final_score", 0.0) if m.get("syntax_valid") else -100.0,
+                        "is_winner": is_winner,
+                        "rejected": rejected,
+                    })
+                on_mutants_graded(graded_list)
 
             # ============================================================
             # Step 2: CAUSAL ANCHOR — JIT Pre-Commit Savepoint
             # ============================================================
-            # Record whether the workspace is dirty before the test run so
-            # we know there is something to roll back if needed.
             workspace_dirty = not await self._git_workspace_clean()
-            print(
-                f"[ORCHESTRATOR] [Step 2] Causal Anchor — "
-                f"workspace dirty: {workspace_dirty}"
-            )
+            _log(f"[Step 2] Causal Anchor — workspace dirty: {workspace_dirty}")
 
             # ============================================================
             # Step 3: EXECUTE TEST / COMPILE COMMAND
             # ============================================================
             cmd_tokens: List[str] = shlex.split(self.test_command)
-            print(f"[ORCHESTRATOR] [Step 3] Executing: {self.test_command}")
+            _log(f"[Step 3] Executing: {self.test_command}")
 
             exit_code, cmd_stdout, cmd_stderr = await self._run_command(
                 cmd_tokens,
                 timeout=120.0,
             )
 
-            # Merge stdout + stderr into a single diagnostic blob
             combined_output: str = "\n".join(
                 filter(None, [cmd_stdout.strip(), cmd_stderr.strip()])
             )
-
-            print(
-                f"[ORCHESTRATOR] Command finished — exit code: {exit_code}"
-            )
+            _log(f"Command finished — exit code: {exit_code}")
 
             # Log this turn
             turn_log.append({
                 "turn":      loop_turn,
                 "exit_code": exit_code,
-                "output":    combined_output[:500],   # Truncated for log storage
+                "output":    combined_output[:500],
             })
 
             # ============================================================
             # Step 4: SUCCESS PATH — exit code 0
             # ============================================================
             if exit_code == 0:
-                print(
-                    f"[ORCHESTRATOR] [PASS] Command succeeded. "
-                    f"Task complete at turn #{loop_turn}."
-                )
+                _log(f"[PASS] Command succeeded. Task complete at turn #{loop_turn}.")
                 return {
                     "status":          "SUCCESS",
                     "turns_elapsed":   loop_turn,
@@ -539,54 +626,61 @@ class Orchestrator:
             # ============================================================
             # Step 5: FAILURE PATH — evaluate causal stability
             # ============================================================
-            print(
-                "[ORCHESTRATOR] [FAIL] Command failed. "
-                "Passing to Causal Convergence Monitor..."
-            )
+            _log("[FAIL] Command failed. Passing to Causal Convergence Monitor...")
 
             loop_stable: bool = monitor.evaluate_step(combined_output)
+            
+            if monitor.residuals and on_residual:
+                on_residual(monitor.residuals[-1])
 
-            print(
-                f"[ORCHESTRATOR] Monitor residual: "
+            _log(
+                f"Monitor residual: "
                 f"{round(monitor.residuals[-1], 4) if monitor.residuals else 'N/A'} "
                 f"| Stable: {loop_stable}"
             )
 
             if loop_stable:
-                # Progress is being made — proceed to next generation cycle
-                print(
-                    f"[ORCHESTRATOR] Loop is converging. "
-                    f"Proceeding to Turn #{loop_turn + 1}."
-                )
+                _log(f"Loop is converging. Proceeding to Turn #{loop_turn + 1}.")
                 continue
 
             # ============================================================
-            # Step 6: PARADOX DETECTED — rollback and halt
+            # Step 6: PARADOX DETECTED — check for steering or rollback
             # ============================================================
-            print(
+            if on_request_steering:
+                err_preview = combined_output[-250:] if combined_output else "No trace available"
+                hint_msg = f"Causal Loop Stalled (Residual: {monitor.residuals[-1]:.4f}).\nLast error:\n{err_preview}"
+                
+                if asyncio.iscoroutinefunction(on_request_steering):
+                    hint = await on_request_steering(hint_msg)
+                else:
+                    hint = on_request_steering(hint_msg)
+                    
+                if hint:
+                    self.active_hints.append(hint)
+                    monitor.residuals.clear()
+                    monitor.state_history.clear()
+                    _log(f"🔄 [SARATHI] Steering accepted. Resetting convergence monitor loops.")
+                    continue
+
+            # If no steering was provided, execute rollback and halt
+            _log(
                 "[WARNING] ══════════════════════════════════════════════\n"
                 "[WARNING]  CAUSAL INSTABILITY / INFINITE LOOP DETECTED  \n"
                 "[WARNING] ══════════════════════════════════════════════"
             )
-            print(
-                f"[ORCHESTRATOR] Residuals for last {self.loop_threshold} turns: "
+            _log(
+                f"Residuals for last {self.loop_threshold} turns: "
                 f"{[round(r, 4) for r in monitor.residuals[-self.loop_threshold:]]}"
             )
 
             # --- Execute Git Rollback ---
-            print("[ORCHESTRATOR] Triggering Causal Branch Pruning (git rollback)...")
+            _log("Triggering Causal Branch Pruning (git rollback)...")
             rollback_ok, rollback_msg = await self._git_rollback()
-            print(rollback_msg)
+            _log(rollback_msg)
 
             if not rollback_ok:
-                # Rollback failed — still raise the exception but flag the
-                # workspace as potentially dirty in the diagnostics payload.
-                print(
-                    "[ERROR] Git rollback failed. "
-                    "Workspace may contain unstable edits."
-                )
+                _log("[ERROR] Git rollback failed. Workspace may contain unstable edits.")
 
-            # --- Raise graceful halt exception ---
             raise CausalInstabilityException(
                 f"EMMA solver loop halted: infinite regression detected at "
                 f"turn #{loop_turn}. Workspace rolled back={rollback_ok}.",
@@ -598,10 +692,7 @@ class Orchestrator:
         # ----------------------------------------------------------------
         # Max turn ceiling reached without success
         # ----------------------------------------------------------------
-        print(
-            f"[ORCHESTRATOR] Max turns ({self.max_turns}) exhausted "
-            "without convergence."
-        )
+        _log(f"Max turns ({self.max_turns}) exhausted without convergence.")
         return {
             "status":          "MAX_TURNS_REACHED",
             "turns_elapsed":   loop_turn,
