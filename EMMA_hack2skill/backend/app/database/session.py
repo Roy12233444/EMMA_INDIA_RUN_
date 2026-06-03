@@ -33,8 +33,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 try:
-    from app.config import Settings as _Settings
-    _MANIFOLD_DB_PATH = Path(_Settings.MANIFOLD_DB_PATH)
+    from app.config import settings
+    _MANIFOLD_DB_PATH = Path(settings.MANIFOLD_DB_PATH)
 except ImportError:
     # Standalone execution / unit-test fallback
     _MANIFOLD_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "manifold.db"

@@ -42,9 +42,9 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 try:
-    from app.config import Settings as _Settings
-    MANIFOLD_DB_PATH:  str = _Settings.MANIFOLD_DB_PATH
-    EMBEDDINGS_MODEL:  str = getattr(_Settings, "EMBEDDINGS_MODEL", "all-MiniLM-L6-v2")
+    from app.config import settings
+    MANIFOLD_DB_PATH:  str = settings.MANIFOLD_DB_PATH
+    EMBEDDINGS_MODEL:  str = getattr(settings, "EMBEDDINGS_MODEL", "all-MiniLM-L6-v2")
 except ImportError:
     _base = Path(__file__).resolve().parent.parent.parent.parent
     MANIFOLD_DB_PATH  = str(_base / "manifold.db")
