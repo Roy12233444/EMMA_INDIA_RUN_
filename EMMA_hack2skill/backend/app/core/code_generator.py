@@ -406,115 +406,25 @@ class CodeGenerator:
 
     def run_sandbox(self, code: str) -> tuple[bool, str, str, float]:
         """
-        Execute *code* inside a fully isolated in-memory sandbox.
+        Execute *code* inside a fully isolated subprocess sandbox.
 
-        The sandbox provides:
-
-        * An empty ``__builtins__`` mapping restricted to a minimal safe set.
-        * Isolated ``globals`` and ``locals`` dictionaries with no references
-          to the host process namespace.
-        * Full capture of stdout and stderr via :mod:`contextlib`.
-        * Wall-clock execution latency measurement.
-
-        Parameters
-        ----------
-        code:
-            The Python source string to execute.
-
-        Returns
-        -------
-        tuple[bool, str, str, float]
-            A 4-tuple of ``(success, stdout, stderr, latency_ms)`` where
-            *success* is ``True`` if the code ran without raising an exception.
+        Delegates entirely to sandbox.run_in_sandbox() which:
+          - Applies the Sudarshana AST Gas Metering Shield
+          - Enforces 256 MB RAM ceiling (OS-level, platform-specific)
+          - Enforces 30s timeout via subprocess.Popen.communicate(timeout=)
+          - Communicates via structured JSON pipe protocol
+          - Returns a SandboxResult with normalised exit classification
         """
-        stdout_buf = io.StringIO()
-        stderr_buf = io.StringIO()
-
-        # Minimal safe built-ins exposed to sandboxed code
-        safe_builtins: dict[str, Any] = {
-            "abs": abs,
-            "all": all,
-            "any": any,
-            "bin": bin,
-            "bool": bool,
-            "bytes": bytes,
-            "callable": callable,
-            "chr": chr,
-            "dict": dict,
-            "divmod": divmod,
-            "enumerate": enumerate,
-            "filter": filter,
-            "float": float,
-            "format": format,
-            "frozenset": frozenset,
-            "hasattr": hasattr,
-            "hash": hash,
-            "hex": hex,
-            "int": int,
-            "isinstance": isinstance,
-            "issubclass": issubclass,
-            "iter": iter,
-            "len": len,
-            "list": list,
-            "map": map,
-            "max": max,
-            "min": min,
-            "next": next,
-            "oct": oct,
-            "ord": ord,
-            "pow": pow,
-            "print": print,  # redirected via contextlib
-            "range": range,
-            "repr": repr,
-            "reversed": reversed,
-            "round": round,
-            "set": set,
-            "slice": slice,
-            "sorted": sorted,
-            "str": str,
-            "sum": sum,
-            "tuple": tuple,
-            "type": type,
-            "zip": zip,
-            "True": True,
-            "False": False,
-            "None": None,
-            "NotImplemented": NotImplemented,
-            "Ellipsis": ...,
-            "Exception": Exception,
-            "ValueError": ValueError,
-            "TypeError": TypeError,
-            "KeyError": KeyError,
-            "IndexError": IndexError,
-            "AttributeError": AttributeError,
-            "StopIteration": StopIteration,
-            "RuntimeError": RuntimeError,
-        }
-
-        sandbox_globals: dict[str, Any] = {"__builtins__": safe_builtins}
-        sandbox_locals: dict[str, Any] = {}
-
-        success = False
-        latency_ms = 0.0
-
-        try:
-            with (
-                contextlib.redirect_stdout(stdout_buf),
-                contextlib.redirect_stderr(stderr_buf),
-            ):
-                t_start = time.perf_counter()
-                exec(  # noqa: S102 — intentional sandboxed execution
-                    compile(code, "<sandbox>", "exec"),
-                    sandbox_globals,
-                    sandbox_locals,
-                )
-                t_end = time.perf_counter()
-                latency_ms = (t_end - t_start) * 1_000
-                success = True
-        except Exception as exc:
-            stderr_buf.write(f"{type(exc).__name__}: {exc}\n")
-
-        return success, stdout_buf.getvalue(), stderr_buf.getvalue(), latency_ms
+        from app.safety.sandbox import run_in_sandbox
+        result = run_in_sandbox(
+            code=code,
+            timeout_s=30.0,
+            memory_mb=256,
+            gas_limit=50_000,
+            safe_builtins=True,
+            inject_gas=True,
+        )
+        return result.success, result.stdout, result.stderr, result.latency_ms
 
     # ------------------------------------------------------------------
     # Internal helpers

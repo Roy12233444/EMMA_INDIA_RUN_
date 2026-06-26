@@ -903,11 +903,17 @@ def create_spore() -> Path:
         stage_session  = staging / "session.db"
         stage_manifold = staging / "manifold.db"
         shutil.copy2(SESSION_DB,  stage_session)
-        shutil.copy2(MANIFOLD_DB, stage_manifold)
+        if MANIFOLD_DB.is_dir():
+            shutil.copytree(MANIFOLD_DB, stage_manifold)
+        else:
+            shutil.copy2(MANIFOLD_DB, stage_manifold)
 
         # Step 3: Compute SHA-256 hashes
         session_hash  = _sha256(stage_session)
-        manifold_hash = _sha256(stage_manifold)
+        if stage_manifold.is_dir():
+            manifold_hash = _dir_sha256(stage_manifold)
+        else:
+            manifold_hash = _sha256(stage_manifold)
 
         manifest: Dict[str, str] = {
             "timestamp":     ts,
@@ -920,7 +926,12 @@ def create_spore() -> Path:
         # Step 4: Write ZIP archive
         with zipfile.ZipFile(spore_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(stage_session,  "session.db")
-            zf.write(stage_manifold, "manifold.db")
+            if stage_manifold.is_dir():
+                for f in sorted(stage_manifold.glob("**/*")):
+                    if f.is_file():
+                        zf.write(f, "manifold.db/" + str(f.relative_to(stage_manifold)))
+            else:
+                zf.write(stage_manifold, "manifold.db")
             zf.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
 
         log.info("[Chiranjeevi] Spore archived: %s", spore_path.name)
@@ -977,7 +988,7 @@ def restore_from_spore() -> bool:
 
     # Step 1: DETECT — check which files are corrupt or missing
     session_corrupt  = not SESSION_DB.exists()  or not _integrity_ok(SESSION_DB)
-    manifold_corrupt = not MANIFOLD_DB.exists() or not MANIFOLD_DB.exists()
+    manifold_corrupt = not MANIFOLD_DB.exists()
 
     if not session_corrupt and not manifold_corrupt:
         log.info("[Chiranjeevi] Integrity check passed — no recovery needed.")
@@ -994,7 +1005,10 @@ def restore_from_spore() -> bool:
         if db_path.exists():
             quarantine_path = db_path.with_suffix(f".corrupt_{ts}")
             try:
-                db_path.rename(quarantine_path)
+                if db_path.is_dir():
+                    shutil.move(str(db_path), str(quarantine_path))
+                else:
+                    db_path.rename(quarantine_path)
                 log.info("[Chiranjeevi] Quarantined: %s → %s",
                          db_path.name, quarantine_path.name)
             except OSError as exc:
@@ -1019,17 +1033,29 @@ def restore_from_spore() -> bool:
                                 spore_path.name, exc)
                     continue
 
+                namelist = zf.namelist()
+                is_manifold_dir = any(name.startswith("manifold.db/") for name in namelist)
+
                 # Read DB bytes
                 try:
                     session_bytes  = zf.read("session.db")
-                    manifold_bytes = zf.read("manifold.db")
+                    if is_manifold_dir:
+                        manifold_files = sorted([name for name in namelist if name.startswith("manifold.db/")])
+                        h = hashlib.sha256()
+                        for name in manifold_files:
+                            rel_path = name[len("manifold.db/"):]
+                            h.update(rel_path.encode("utf-8"))
+                            h.update(zf.read(name))
+                        computed_manifold = h.hexdigest()
+                    else:
+                        manifold_bytes = zf.read("manifold.db")
+                        computed_manifold = hashlib.sha256(manifold_bytes).hexdigest()
                 except KeyError as exc:
                     log.warning("[Chiranjeevi] Missing file in %s: %s", spore_path.name, exc)
                     continue
 
             # Verify SHA-256 hashes
             computed_session  = hashlib.sha256(session_bytes).hexdigest()
-            computed_manifold = hashlib.sha256(manifold_bytes).hexdigest()
 
             if computed_session  != manifest.get("session_hash"):
                 log.warning("[Chiranjeevi] session.db hash mismatch in %s.", spore_path.name)
@@ -1040,14 +1066,33 @@ def restore_from_spore() -> bool:
 
             # Hashes verified — write restored files
             SESSION_DB.write_bytes(session_bytes)
-            MANIFOLD_DB.write_bytes(manifold_bytes)
+            if is_manifold_dir:
+                if MANIFOLD_DB.exists():
+                    if MANIFOLD_DB.is_dir():
+                        shutil.rmtree(MANIFOLD_DB)
+                    else:
+                        MANIFOLD_DB.unlink()
+                MANIFOLD_DB.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(spore_path, "r") as zf:
+                    for name in manifold_files:
+                        rel_path = name[len("manifold.db/"):]
+                        dest_file = MANIFOLD_DB / rel_path
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        dest_file.write_bytes(zf.read(name))
+            else:
+                if MANIFOLD_DB.exists() and MANIFOLD_DB.is_dir():
+                    shutil.rmtree(MANIFOLD_DB)
+                MANIFOLD_DB.write_bytes(manifold_bytes)
             log.info("[Chiranjeevi] Bytes written from %s.", spore_path.name)
 
             # Step 5: Post-restore integrity verification
             if not _integrity_ok(SESSION_DB):
                 log.warning("[Chiranjeevi] Post-restore integrity check FAILED for session.db. Trying next spore.")
                 SESSION_DB.unlink(missing_ok=True)
-                MANIFOLD_DB.unlink(missing_ok=True)
+                if MANIFOLD_DB.is_dir():
+                    shutil.rmtree(MANIFOLD_DB, ignore_errors=True)
+                else:
+                    MANIFOLD_DB.unlink(missing_ok=True)
                 continue
 
             # Step 6: NOTIFY — success
@@ -1089,6 +1134,18 @@ def _sha256(path: Path) -> str:
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(65_536), b""):
             h.update(chunk)
+    return h.hexdigest()
+
+
+def _dir_sha256(path: Path) -> str:
+    """Compute a deterministic SHA-256 hash of a directory's files and metadata."""
+    h = hashlib.sha256()
+    for f in sorted(path.glob("**/*")):
+        if f.is_file():
+            h.update(str(f.relative_to(path)).encode("utf-8"))
+            with open(f, "rb") as fh:
+                for chunk in iter(lambda: fh.read(65_536), b""):
+                    h.update(chunk)
     return h.hexdigest()
 
 

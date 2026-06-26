@@ -1,0 +1,92 @@
+https://academy.openai.com/learn/agents-and-workflows-bieml/lessons
+
+
+https://docs.google.com/document/d/1RslQ13patJukvpBPon43JXLv0OTpXtkhbqHsmFBKi0g/mobilebasic?urp=gmail_link
+
+
+Resources for AI
+Krish Naik Channel:
+https://www.youtube.com/@krishnaik06
+
+CampusX:
+https://www.youtube.com/@campusx-official
+
+
+
+RESOURCES
+
+Python
+
+Krish Naik:
+https://youtube.com/playlist?list=PLZoTAELRMXVNUL99R4bDlVYsncUNvwUBB&si=lQ_9fujeYg8XBlp-
+
+CampusX: https://youtube.com/playlist?list=PLKnIA16_Rmvb1RYR-iTA_hzckhdONtSW4&si=RNNMm0Jhk-QC6SF1V
+
+
+
+Machine Learning
+
+Krish Naik:
+https://youtube.com/playlist?list=PLZoTAELRMXVPBTrWtJkn3wWQxZkmTXGwe&si=gjqnkDgSnlBLhgNo
+
+CampusX:
+https://youtube.com/playlist?list=PLKnIA16_Rmvbr7zKYQuBfsVkjoLcJgxHH&si=_Xxvvh4dVpXELKnz
+
+
+
+Deep Learning
+
+Krish Naik:
+https://youtube.com/playlist?list=PLZoTAELRMXVPGU70ZGsckrMdr0FteeRUi&si=zGf4CHUbvO7_U8K0
+
+CampusX:
+https://youtube.com/playlist?list=PLKnIA16_RmvYuZauWaPlRTC54KxSNLtNn&si=0sf0hHfMeB9RNUi2
+
+
+MLOPs
+
+Krish Naik:
+https://www.youtube.com/watch?v=Y_vQyMljDsE&list=PLZoTAELRMXVOjS7KXQK3DAj7ER6LT2fEO
+
+
+CampusX:
+https://youtu.be/6SRifO6dmuE?si=y-ssrexSwOr_S_oe
+
+
+
+FastAPI
+
+Krish Naik:
+https://www.youtube.com/playlist?list=PLZoTAELRMXVPgsojPOHF9i0u2L83-m9P7
+
+CampusX:
+https://youtube.com/playlist?list=PLKnIA16_RmvZ41tjbKB2ZnwchfniNsMuQ&si=r8QL8vQ6mZwEG-yy
+
+
+RAG
+
+Krish Naik
+https://www.youtube.com/watch?v=fZM3oX4xEyg&list=PLZoTAELRMXVM8Pf4U67L4UuDRgV4TNX9D
+
+CampusX:
+https://youtube.com/playlist?list=PLKnIA16_Rmva0dRLWEHLznSHKbFD_RJfX&si=5xV8UtjPL3IhED_I
+
+
+Agentic AI using Langraph
+
+Krish Naik:
+https://www.youtube.com/watch?v=vVGXPRjtAJE&list=PLZoTAELRMXVPFd7JdvB-rnTb_5V26NYNO
+
+CampusX:
+https://www.youtube.com/playlist?list=PLKnIA16_RmvYsvB8qkUQuJmJNuiCUJFPL&si=pdoi8730-ykF9pF_
+
+
+MCP - Model Context Protocol
+
+Krish Naik:
+https://www.youtube.com/watch?v=-UQ6OZywZ2I&list=PLZoTAELRMXVPC8r1xF68Gksi241DAtMsK
+
+CampusX:
+https://youtube.com/playlist?list=PLKnIA16_Rmva_oZ9F4ayUu9qcWgF7Fyc0&si=XVOL9kHcKPYNklar
+
+

@@ -1,0 +1,18 @@
+# Python virtual environments
+venv/
+EMMA_hack2skill/venv/
+
+# Cache directories and bytecode
+__pycache__/
+**/__pycache__/
+*.pyc
+EMMA_hack2skill/.pytest_cache/
+.pytest_cache/
+
+# Local databases
+EMMA_hack2skill/session.db
+
+# Office temporary files and PowerPoint slides
+~$*
+*.pptx
+

@@ -115,9 +115,9 @@ def _prompt_config() -> dict:
     args, unknown = parser.parse_known_args()
     
     # If non-interactive or any command-line option is provided, bypass prompt
-    if args.non-interactive or any(v is not None for v in [args.task, args.target_file, args.test_command, args.max_turns, args.loop_threshold, args.force_system]):
-        task = args.task or "Add a descriptive module docstring to backend/app/utils/token_prune.py"
-        target_file = args.target_file or "backend/app/utils/token_prune.py"
+    if args.non_interactive or any(v is not None for v in [args.task, args.target_file, args.test_command, args.max_turns, args.loop_threshold, args.force_system]):
+        task = args.task or "Add a descriptive module docstring to backend/app/utils/mock_target.py"
+        target_file = args.target_file or "backend/app/utils/mock_target.py"
         test_cmd = args.test_command or "python scripts/run_tests.py"
         max_turns = args.max_turns if args.max_turns is not None else 15
         loop_threshold = args.loop_threshold if args.loop_threshold is not None else 3
@@ -140,13 +140,13 @@ def _prompt_config() -> dict:
 
     task = Prompt.ask(
         f"  [cyan]Task Description[/cyan]",
-        default="Add a descriptive module docstring to backend/app/utils/token_prune.py",
+        default="Add a descriptive module docstring to backend/app/utils/mock_target.py",
         console=_con,
     )
 
     target_file = Prompt.ask(
         f"  [cyan]Target File[/cyan] (relative to workspace root)",
-        default="backend/app/utils/token_prune.py",
+        default="backend/app/utils/mock_target.py",
         console=_con,
     )
 

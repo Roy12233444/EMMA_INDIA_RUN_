@@ -188,6 +188,36 @@ WHEN OLD.is_hard_frozen = 1
 BEGIN
     SELECT RAISE(IGNORE);
 END;
+
+-- ── Skills Registry Table  (Modular Dynamic Skill Registry) ───────────────
+-- Stores executable diagnostic scripts (Python/Bash/PowerShell) that agents
+-- can register and retrieve semantically at runtime to solve recurring errors.
+CREATE TABLE IF NOT EXISTS skills (
+    skill_id           TEXT      PRIMARY KEY,
+    name               TEXT      NOT NULL,
+    description        TEXT      NOT NULL,
+    script             TEXT      NOT NULL,
+    language           TEXT      NOT NULL
+                       CHECK(language IN ('python', 'bash', 'powershell')),
+    author_agent       TEXT      NOT NULL,
+    version            TEXT      NOT NULL DEFAULT '1.0.0',
+    input_schema       TEXT      NOT NULL,   -- Serialised JSON: {\"param\": \"type\"}
+    output_schema      TEXT      NOT NULL,   -- Serialised JSON: {\"return\": \"type\"}
+    performance_rating REAL      DEFAULT 0.0
+                       CHECK(performance_rating BETWEEN 0.0 AND 1.0),
+    invocation_count   INTEGER   DEFAULT 0,
+    is_verified        BOOLEAN   DEFAULT 0,
+    created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Accelerates top-rated skill retrieval for agent consumption
+CREATE INDEX IF NOT EXISTS idx_skills_rating
+    ON skills(performance_rating DESC, invocation_count DESC);
+
+-- Accelerates verified-only skill filtering during semantic search
+CREATE INDEX IF NOT EXISTS idx_skills_verified
+    ON skills(is_verified, performance_rating DESC);
 """
 
 
