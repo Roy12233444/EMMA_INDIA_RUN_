@@ -15,11 +15,11 @@
 ```mermaid
 flowchart TD
     subgraph ORCHESTRATOR["🔁 Orchestrator Solve Cycle"]
-        O1["orchestrator.py\nsolve loop turn N"]
+        O1["orchestrator.py<br>solve loop turn N"]
         O2{"Exit Code > 0?"}
-        O3["CausalConvergenceMonitor\nevaluate_step"]
-        O4{"Paradox\nDetected?"}
-        O5["git checkout -- .\nRollback Workspace"]
+        O3["CausalConvergenceMonitor<br>evaluate_step"]
+        O4{"Paradox<br>Detected?"}
+        O5["git checkout -- .<br>Rollback Workspace"]
         O6["Raise CausalInstabilityException"]
         
         O1 --> O2
@@ -27,82 +27,82 @@ flowchart TD
         O2 -->|No - PASS| SUCCESS(["✅ Return SUCCESS"])
         O3 --> O4
         O4 -->|Stable| O1
-        O4 -->|Stalled R≥0.95 x3| O5
+        O4 -->|Stalled R >= 0.95 x3| O5
         O5 --> O6
     end
 
     subgraph CODEGEN["⚙️ Code Generator — executor.py"]
-        C1["CodeGenerator\ngenerate_and_apply_patch"]
-        C2["InferenceRouter\nrequest_mutants"]
-        C3["DraftCoordinator\ngenerate_drafts"]
+        C1["CodeGenerator<br>generate_and_apply_patch"]
+        C2["InferenceRouter<br>request_mutants"]
+        C3["DraftCoordinator<br>generate_drafts"]
         C1 --> C2 --> C3
     end
 
     subgraph PARALLEL["⚡ asyncio.gather — Parallel Inference"]
         direction TB
-        T1["asyncio.to_thread\n_sync_llm_call\nMutant A\ntemp=0.20"]
-        T2["asyncio.to_thread\n_sync_llm_call\nMutant B\ntemp=0.70"]
-        T3["asyncio.to_thread\n_sync_llm_call\nMutant C\ntemp=0.95"]
+        T1["asyncio.to_thread<br>_sync_llm_call<br>Mutant A<br>temp=0.20"]
+        T2["asyncio.to_thread<br>_sync_llm_call<br>Mutant B<br>temp=0.70"]
+        T3["asyncio.to_thread<br>_sync_llm_call<br>Mutant C<br>temp=0.95"]
         C3 --> T1
         C3 --> T2
         C3 --> T3
     end
 
     subgraph LLM["🧠 Local AI — Ollama qwen2.5-coder"]
-        L1["http://localhost:11434\n/v1/chat/completions"]
+        L1["http://localhost:11434<br>/v1/chat/completions"]
         T1 & T2 & T3 -->|urllib.request POST| L1
     end
 
     subgraph PROMPTS["✍️ Evolutionary Prompt Engineering"]
-        P1["Mutant A\nParsimonious Architect\nMinimise lines\nDirect logic"]
-        P2["Mutant B\nStructural Alternative\nAlt data structures\nHelper patterns"]
-        P3["Mutant C\nCreative Decoupler\nHigh-entropy\nModular abstraction"]
+        P1["Mutant A<br>Parsimonious Architect<br>Minimise lines<br>Direct logic"]
+        P2["Mutant B<br>Structural Alternative<br>Alt data structures<br>Helper patterns"]
+        P3["Mutant C<br>Creative Decoupler<br>High-entropy<br>Modular abstraction"]
         L1 -->|Raw response A| P1
         L1 -->|Raw response B| P2
         L1 -->|Raw response C| P3
     end
 
     subgraph XML["🛡️ XML Extraction Gate"]
-        X1["XMLExtractor\n_extract_code_proposal\nregex: CODE_PROPOSAL"]
-        X2{"Tags\nFound?"}
-        X3["compile code exec\nSyntax Verification"]
-        X4{"Syntax\nValid?"}
-        XF["Fallback Mutant\nSimulation Mode\n+ Diagnostic Log"]
+        X1["XMLExtractor<br>_extract_code_proposal<br>regex: CODE_PROPOSAL"]
+        X2{"Tags<br>Found?"}
+        X3["compile code exec<br>Syntax Verification"]
+        X4{"Syntax<br>Valid?"}
+        XF["Fallback Mutant<br>Simulation Mode<br>+ Diagnostic Log"]
         P1 & P2 & P3 --> X1
         X1 --> X2
         X2 -->|No tags| XF
         X2 -->|Tags found| X3
         X3 --> X4
         X4 -->|SyntaxError| XF
-        X4 -->|Clean| CLEAN(["Clean Python\nstring extracted"])
+        X4 -->|Clean| CLEAN(["Clean Python<br>string extracted"])
     end
 
     subgraph OFFLINE["🔌 Offline Fallback Mode"]
-        OF1{"URLError /\nTimeoutError?"}
-        OF2["Log: FALLBACK Mutant X\nReason: LLM unreachable\nSubstituting simulation"]
-        OF3["Simulation Mutant\nA=valid B=valid C=invalid"]
+        OF1{"URLError /<br>TimeoutError?"}
+        OF2["Log: FALLBACK Mutant X<br>Reason: LLM unreachable<br>Substituting simulation"]
+        OF3["Simulation Mutant<br>A=valid B=valid C=invalid"]
         T1 & T2 & T3 -->|Exception?| OF1
         OF1 -->|Yes| OF2 --> OF3
         OF3 --> X1
     end
 
     subgraph SANDBOX["🔬 MutantCodeSelector — Fitness Scoring"]
-        S1["Mutant A — Score computation\nBase +50 or -100\n- Length Penalty 0.1/line\n- Latency Penalty 5.0/sec\n+ Security Penalty -200/violation"]
+        S1["Mutant A — Score computation<br>Base +50 or -100<br>- Length Penalty 0.1/line<br>- Latency Penalty 5.0/sec<br>+ Security Penalty -200/violation"]
         S2["Mutant B — Score computation"]
         S3["Mutant C — Score computation"]
-        SW{"Winner\nSelection\nmax score > 0"}
-        SR["REJECTED\nscore ≤ 0 or\nviolations"]
+        SW{"Winner<br>Selection<br>max score > 0"}
+        SR["REJECTED<br>score <= 0 or<br>violations"]
         CLEAN --> S1 & S2 & S3
         S1 & S2 & S3 --> SW
         SW -->|Loser| SR
     end
 
     subgraph COMMIT["💾 Atomic Filesystem Commit"]
-        A1["_atomic_commit\nWrite to .emma_mutant_tmp.py"]
-        A2["ast.parse verify\ntemp file"]
-        A3{"Compile\nOK?"}
-        A4["os.replace\ntarget_path ← tmp\nPOSIX atomic"]
-        A5["CommitError raised\ntemp file unlinked\noriginal preserved"]
+        A1["_atomic_commit<br>Write to .emma_mutant_tmp.py"]
+        A2["ast.parse verify<br>temp file"]
+        A3{"Compile<br>OK?"}
+        A4["os.replace<br>target_path <- tmp<br>POSIX atomic"]
+        A5["CommitError raised<br>temp file unlinked<br>original preserved"]
         SW -->|Winner| A1
         A1 --> A2 --> A3
         A3 -->|Yes| A4
