@@ -2,7 +2,7 @@
 ## Complete Project Documentation
 
 > **Version:** 1.0.0  
-> **Build:** EMMA_hack2skill (India Runs Hackathon — Track 2 Submission)  
+> **Build:** EMMA_hack2skill (India Runs Hackathon — Track 1 Submission)  
 > **Last Updated:** May 2026  
 > **License:** Proprietary — All rights reserved
 
