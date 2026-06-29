@@ -220,16 +220,16 @@ flowchart TD
     %% Flow link between main components
     O1 --> C1
 
-    %% Sleek High-Contrast Dark-Slate Card Palette (works on both themes)
-    style ORCHESTRATOR fill:#0f172a,stroke:#0ea5e9,stroke-width:2.5px,color:#f8fafc
-    style CODEGEN fill:#0f172a,stroke:#10b981,stroke-width:2.5px,color:#f8fafc
-    style PARALLEL fill:#0f172a,stroke:#f59e0b,stroke-width:2.5px,color:#f8fafc
-    style LLM fill:#0f172a,stroke:#8b5cf6,stroke-width:2.5px,color:#f8fafc
-    style PROMPTS fill:#0f172a,stroke:#8b5cf6,stroke-width:2.5px,color:#f8fafc
-    style XML fill:#0f172a,stroke:#0ea5e9,stroke-width:2.5px,color:#f8fafc
-    style OFFLINE fill:#0f172a,stroke:#ef4444,stroke-width:2.5px,color:#f8fafc
-    style SANDBOX fill:#0f172a,stroke:#10b981,stroke-width:2.5px,color:#f8fafc
-    style COMMIT fill:#0f172a,stroke:#f59e0b,stroke-width:2.5px,color:#f8fafc
+    %% Sleek High-Contrast Professional Pastel Palette (works on both themes)
+    style ORCHESTRATOR fill:#e0f2fe,stroke:#0284c7,stroke-width:2.5px,color:#0f172a
+    style CODEGEN fill:#dcfce7,stroke:#10b981,stroke-width:2.5px,color:#0f172a
+    style PARALLEL fill:#fef3c7,stroke:#d97706,stroke-width:2.5px,color:#0f172a
+    style LLM fill:#f3e8ff,stroke:#7c3aed,stroke-width:2.5px,color:#0f172a
+    style PROMPTS fill:#f3e8ff,stroke:#7c3aed,stroke-width:2.5px,color:#0f172a
+    style XML fill:#e0f2fe,stroke:#0284c7,stroke-width:2.5px,color:#0f172a
+    style OFFLINE fill:#fee2e2,stroke:#dc2626,stroke-width:2.5px,color:#0f172a
+    style SANDBOX fill:#dcfce7,stroke:#10b981,stroke-width:2.5px,color:#0f172a
+    style COMMIT fill:#fef3c7,stroke:#d97706,stroke-width:2.5px,color:#0f172a
 ```
 
 ---
