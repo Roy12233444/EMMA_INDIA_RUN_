@@ -6,6 +6,13 @@
 > **Last Updated:** May 2026  
 > **License:** Proprietary — All rights reserved
 
+### 🔗 Project Links
+
+| Resource | Link |
+|----------|------|
+| 📁 **Google Drive** (Full Submission Materials) | [Click here to access](https://drive.google.com/drive/folders/1CQtJkdS_THL2ZrP1Sdx1J_1FjGKYc00k?usp=sharing) |
+| 💻 **GitHub Repository** (Source Code) | [Roy12233444/EMMA_INDIA_RUN_](https://github.com/Roy12233444/EMMA_INDIA_RUN_/tree/main) |
+
 ---
 
 ## Table of Contents
