@@ -10,9 +10,9 @@
   .emma-ring-2 { stroke: #94a3b8 !important; opacity: 0.1 !important; }
   .emma-ring-dashed { stroke: #475569 !important; opacity: 0.3 !important; }
   @media (prefers-color-scheme: dark) {
-    .emma-title { fill: #f8fafc !important; }
-    .emma-subtitle { fill: #94a3b8 !important; }
-    .emma-branding { fill: #cbd5e1 !important; }
+    .emma-title { fill: #7c3aed !important; }
+    .emma-subtitle { fill: #6366f1 !important; }
+    .emma-branding { fill: #6366f1 !important; }
     .emma-ring-1 { stroke: #22d3ee !important; opacity: 0.25 !important; }
     .emma-ring-2 { stroke: #a855f7 !important; opacity: 0.18 !important; }
     .emma-ring-dashed { stroke: #38bdf8 !important; opacity: 0.4 !important; }
