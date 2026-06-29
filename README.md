@@ -117,7 +117,7 @@ The complete vertical signal flow — from task ingestion through evolutionary m
 
 ```mermaid
 flowchart TD
-    classDef default font-size:16px,font-family:'Inter',sans-serif;
+    classDef default fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc,font-size:18px,font-weight:bold,font-family:'Inter',sans-serif;
     subgraph ORCHESTRATOR["🔁 Orchestrator Solve Cycle"]
         O1["orchestrator.py<br>solve loop turn N"]
         O2{"Exit Code > 0?"}
@@ -220,16 +220,16 @@ flowchart TD
     %% Flow link between main components
     O1 --> C1
 
-    %% Sleek High-Contrast Light-Mode Palette
-    style ORCHESTRATOR fill:#f8fafc,stroke:#0ea5e9,stroke-width:2.5px,color:#0f172a
-    style CODEGEN fill:#f8fafc,stroke:#10b981,stroke-width:2.5px,color:#0f172a
-    style PARALLEL fill:#f8fafc,stroke:#f59e0b,stroke-width:2.5px,color:#0f172a
-    style LLM fill:#f8fafc,stroke:#8b5cf6,stroke-width:2.5px,color:#0f172a
-    style PROMPTS fill:#f8fafc,stroke:#8b5cf6,stroke-width:2.5px,color:#0f172a
-    style XML fill:#f8fafc,stroke:#0ea5e9,stroke-width:2.5px,color:#0f172a
-    style OFFLINE fill:#f8fafc,stroke:#ef4444,stroke-width:2.5px,color:#0f172a
-    style SANDBOX fill:#f8fafc,stroke:#10b981,stroke-width:2.5px,color:#0f172a
-    style COMMIT fill:#f8fafc,stroke:#f59e0b,stroke-width:2.5px,color:#0f172a
+    %% Sleek High-Contrast Dark-Slate Card Palette (works on both themes)
+    style ORCHESTRATOR fill:#0f172a,stroke:#0ea5e9,stroke-width:2.5px,color:#f8fafc
+    style CODEGEN fill:#0f172a,stroke:#10b981,stroke-width:2.5px,color:#f8fafc
+    style PARALLEL fill:#0f172a,stroke:#f59e0b,stroke-width:2.5px,color:#f8fafc
+    style LLM fill:#0f172a,stroke:#8b5cf6,stroke-width:2.5px,color:#f8fafc
+    style PROMPTS fill:#0f172a,stroke:#8b5cf6,stroke-width:2.5px,color:#f8fafc
+    style XML fill:#0f172a,stroke:#0ea5e9,stroke-width:2.5px,color:#f8fafc
+    style OFFLINE fill:#0f172a,stroke:#ef4444,stroke-width:2.5px,color:#f8fafc
+    style SANDBOX fill:#0f172a,stroke:#10b981,stroke-width:2.5px,color:#f8fafc
+    style COMMIT fill:#0f172a,stroke:#f59e0b,stroke-width:2.5px,color:#f8fafc
 ```
 
 ---
